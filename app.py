@@ -1,5 +1,6 @@
 from flask import Flask, jsonify
 import requests
+import os
 
 app = Flask(__name__)
 
@@ -10,9 +11,10 @@ def home():
 @app.route("/price/<symbol>")
 def price(symbol):
     try:
-        symbol = symbol.upper() + "USDT"
+        symbol = symbol.upper() + "_USDT"
 
-        url = "https://api.binance.com/api/v3/ticker/price"
+        url = "https://api.mexc.com/api/v3/ticker/price"
+
         response = requests.get(
             url,
             params={"symbol": symbol},
@@ -25,7 +27,8 @@ def price(symbol):
             return jsonify({
                 "status": "error",
                 "symbol": symbol,
-                "binance_response": data
+                "mexc_response": data,
+                "http_status": response.status_code
             }), response.status_code
 
         return jsonify({
@@ -42,6 +45,5 @@ def price(symbol):
 
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
