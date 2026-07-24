@@ -10,15 +10,28 @@ def home():
 @app.route("/price/<symbol>")
 def price(symbol):
     try:
-        symbol = symbol.upper()
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT"
-        response = requests.get(url, timeout=10)
+        symbol = symbol.upper() + "USDT"
+
+        url = "https://api.binance.com/api/v3/ticker/price"
+        response = requests.get(
+            url,
+            params={"symbol": symbol},
+            timeout=15
+        )
+
         data = response.json()
 
+        if response.status_code != 200:
+            return jsonify({
+                "status": "error",
+                "symbol": symbol,
+                "binance_response": data
+            }), response.status_code
+
         return jsonify({
-            "symbol": symbol + "USDT",
-            "price": data.get("price"),
-            "status": "success"
+            "status": "success",
+            "symbol": data.get("symbol"),
+            "price": data.get("price")
         })
 
     except Exception as e:
