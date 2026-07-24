@@ -4,14 +4,17 @@ import os
 
 app = Flask(__name__)
 
+
 @app.route("/")
 def home():
     return "GM AI Trading Bot is running!"
 
+
 @app.route("/price/<symbol>")
 def price(symbol):
     try:
-        symbol = symbol.upper() + "_USDT"
+        # MEXC Spot symbol format: BTCUSDT
+        symbol = symbol.upper() + "USDT"
 
         url = "https://api.mexc.com/api/v3/ticker/price"
 
@@ -23,6 +26,7 @@ def price(symbol):
 
         data = response.json()
 
+        # Check MEXC API response
         if response.status_code != 200:
             return jsonify({
                 "status": "error",
@@ -46,4 +50,7 @@ def price(symbol):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
