@@ -1,5 +1,6 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
+import pandas as pd
 import os
 
 app = Flask(__name__)
@@ -7,287 +8,148 @@ app = Flask(__name__)
 MEXC_URL = "https://api.mexc.com/api/v3/klines"
 
 
-def ema(values, period):
-    if len(values) < period:
-        return None
+def get_data(symbol="BTCUSDT", interval="5m", limit=200):
+    params = {
+        "symbol": symbol.upper(),
+        "interval": interval,
+        "limit": limit
+    }
 
-    multiplier = 2 / (period + 1)
-    result = sum(values[:period]) / period
+    response = requests.get(MEXC_URL, params=params, timeout=15)
+    response.raise_for_status()
 
-    for price in values[period:]:
-        result = (price - result) * multiplier + result
+    data = response.json()
 
-    return result
+    if not isinstance(data, list) or len(data) < 50:
+        raise Exception("Not enough market data")
 
+    df = pd.DataFrame(data, columns=[
+        "time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_volume"
+    ])
 
-def rsi(values, period=14):
-    if len(values) <= period:
-        return None
+    df["close"] = pd.to_numeric(df["close"])
+    df["volume"] = pd.to_numeric(df["volume"])
 
-    gains = []
-    losses = []
-
-    for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
-
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    for i in range(period, len(gains)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-
-    if avg_loss == 0:
-        return 100
-
-    rs = avg_gain / avg_loss
-
-    return 100 - (100 / (1 + rs))
+    return df
 
 
-def macd(values):
-    ema12 = ema(values, 12)
-    ema26 = ema(values, 26)
+def calculate_indicators(df):
+    # EMA
+    df["EMA20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["EMA50"] = df["close"].ewm(span=50, adjust=False).mean()
 
-    if ema12 is None or ema26 is None:
-        return None
+    # RSI
+    delta = df["close"].diff()
 
-    return ema12 - ema26
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+
+    rs = avg_gain / avg_loss.replace(0, 0.000001)
+    df["RSI"] = 100 - (100 / (1 + rs))
+
+    # MACD
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+
+    df["MACD"] = ema12 - ema26
+    df["MACD_SIGNAL"] = df["MACD"].ewm(span=9, adjust=False).mean()
+
+    # Volume average
+    df["VOL_AVG"] = df["volume"].rolling(20).mean()
+
+    return df
 
 
-def generate_signal(closes):
-
-    if len(closes) < 30:
-        return "NEUTRAL"
-
-    ema9 = ema(closes, 9)
-    ema21 = ema(closes, 21)
-    rsi_value = rsi(closes, 14)
-    macd_value = macd(closes)
+def generate_signal(df):
+    last = df.iloc[-1]
 
     score = 0
 
-    if ema9 > ema21:
+    # EMA Trend
+    if last["EMA20"] > last["EMA50"]:
+        score += 2
+    elif last["EMA20"] < last["EMA50"]:
+        score -= 2
+
+    # RSI
+    if 50 < last["RSI"] < 70:
         score += 1
+    elif 30 < last["RSI"] < 50:
+        score -= 1
+
+    # MACD
+    if last["MACD"] > last["MACD_SIGNAL"]:
+        score += 2
     else:
-        score -= 1
+        score -= 2
 
-    if rsi_value > 55:
-        score += 1
-    elif rsi_value < 45:
-        score -= 1
+    # Volume
+    if last["volume"] > last["VOL_AVG"]:
+        if score > 0:
+            score += 1
+        elif score < 0:
+            score -= 1
 
-    if macd_value > 0:
-        score += 1
+    # Final Signal
+    if score >= 4:
+        signal = "BUY"
+    elif score <= -4:
+        signal = "SELL"
     else:
-        score -= 1
+        signal = "NEUTRAL"
 
-    if score >= 2:
-        return "UP"
+    confidence = min(95, 50 + abs(score) * 8)
 
-    if score <= -2:
-        return "DOWN"
-
-    return "NEUTRAL"
+    return {
+        "signal": signal,
+        "confidence": round(confidence, 2),
+        "score": score
+    }
 
 
 @app.route("/")
 def home():
-    return "GM AI Trading Bot is running!"
+    return "GM AI Trading Bot v2 is running!"
 
 
-@app.route("/analysis/<symbol>")
-def analysis(symbol):
-
+@app.route("/signal/<symbol>")
+def signal(symbol):
     try:
+        symbol = symbol.upper()
 
-        symbol = symbol.upper() + "USDT"
+        df = get_data(symbol, "5m", 200)
+        df = calculate_indicators(df)
 
-        response = requests.get(
-            MEXC_URL,
-            params={
-                "symbol": symbol,
-                "interval": "5m",
-                "limit": 100
-            },
-            timeout=15
-        )
-
-        data = response.json()
-
-        if response.status_code != 200:
-
-            return jsonify({
-                "status": "error",
-                "mexc_response": data
-            }), response.status_code
-
-        closes = [
-            float(candle[4])
-            for candle in data
-        ]
-
-        signal = generate_signal(closes)
+        result = generate_signal(df)
+        last = df.iloc[-1]
 
         return jsonify({
             "status": "success",
             "symbol": symbol,
             "timeframe": "5m",
-            "current_price": closes[-1],
-            "signal": signal
+            "current_price": round(float(last["close"]), 4),
+            "EMA20": round(float(last["EMA20"]), 4),
+            "EMA50": round(float(last["EMA50"]), 4),
+            "RSI": round(float(last["RSI"]), 2),
+            "MACD": round(float(last["MACD"]), 6),
+            "MACD_SIGNAL": round(float(last["MACD_SIGNAL"]), 6),
+            "signal": result["signal"],
+            "confidence": result["confidence"],
+            "score": result["score"],
+            "warning": "Technical analysis only. No guaranteed prediction."
         })
 
     except Exception as e:
-
         return jsonify({
             "status": "error",
             "message": str(e)
-        }), 500
-
-
-@app.route("/backtest/<symbol>")
-def backtest(symbol):
-
-    try:
-
-        symbol = symbol.upper() + "USDT"
-
-        response = requests.get(
-            MEXC_URL,
-            params={
-                "symbol": symbol,
-                "interval": "5m",
-                "limit": 1000
-            },
-            timeout=20
-        )
-
-        data = response.json()
-
-        if response.status_code != 200:
-
-            return jsonify({
-                "status": "error",
-                "mexc_response": data
-            }), response.status_code
-
-        closes = [
-            float(candle[4])
-            for candle in data
-        ]
-
-        total_signals = 0
-        correct = 0
-        wrong = 0
-        neutral = 0
-
-        results = []
-
-        # Test each historical candle
-        for i in range(30, len(closes) - 1):
-
-            historical_data = closes[:i]
-
-            signal = generate_signal(
-                historical_data
-            )
-
-            current_price = closes[i]
-            next_price = closes[i + 1]
-
-            if signal == "NEUTRAL":
-
-                neutral += 1
-                continue
-
-            total_signals += 1
-
-            actual_direction = (
-                "UP"
-                if next_price > current_price
-                else "DOWN"
-            )
-
-            if signal == actual_direction:
-
-                correct += 1
-
-                result = "CORRECT"
-
-            else:
-
-                wrong += 1
-
-                result = "WRONG"
-
-            results.append({
-                "signal": signal,
-                "actual": actual_direction,
-                "result": result
-            })
-
-        if total_signals > 0:
-
-            win_rate = (
-                correct / total_signals
-            ) * 100
-
-        else:
-
-            win_rate = 0
-
-        return jsonify({
-
-            "status": "success",
-
-            "symbol": symbol,
-
-            "timeframe": "5m",
-
-            "candles_tested": len(closes),
-
-            "total_signals": total_signals,
-
-            "correct_signals": correct,
-
-            "wrong_signals": wrong,
-
-            "neutral_signals": neutral,
-
-            "win_rate_percent": round(
-                win_rate,
-                2
-            ),
-
-            "note":
-            "Backtest results are historical and do not guarantee future performance."
-
-        })
-
-    except Exception as e:
-
-        return jsonify({
-
-            "status": "error",
-
-            "message": str(e)
-
         }), 500
 
 
 if __name__ == "__main__":
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            8080
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
