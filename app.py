@@ -4,41 +4,70 @@ import os
 
 app = Flask(__name__)
 
+MEXC_URL = "https://api.mexc.com/api/v3/klines"
+
 
 @app.route("/")
 def home():
     return "GM AI Trading Bot is running!"
 
 
-@app.route("/price/<symbol>")
-def price(symbol):
+@app.route("/analysis/<symbol>")
+def analysis(symbol):
     try:
-        # MEXC Spot symbol format: BTCUSDT
         symbol = symbol.upper() + "USDT"
 
-        url = "https://api.mexc.com/api/v3/ticker/price"
-
+        # Get 5-minute candles from MEXC
         response = requests.get(
-            url,
-            params={"symbol": symbol},
+            MEXC_URL,
+            params={
+                "symbol": symbol,
+                "interval": "5m",
+                "limit": 20
+            },
             timeout=15
         )
 
         data = response.json()
 
-        # Check MEXC API response
         if response.status_code != 200:
             return jsonify({
                 "status": "error",
-                "symbol": symbol,
-                "mexc_response": data,
-                "http_status": response.status_code
+                "mexc_response": data
             }), response.status_code
+
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No candle data received"
+            }), 400
+
+        # Closing prices
+        closes = [float(candle[4]) for candle in data]
+
+        current_price = closes[-1]
+
+        # Simple moving averages
+        sma5 = sum(closes[-5:]) / 5
+        sma10 = sum(closes[-10:]) / 10
+
+        # Simple trend analysis
+        if sma5 > sma10 and current_price > sma5:
+            signal = "UP"
+        elif sma5 < sma10 and current_price < sma5:
+            signal = "DOWN"
+        else:
+            signal = "NEUTRAL"
 
         return jsonify({
             "status": "success",
-            "symbol": data.get("symbol"),
-            "price": data.get("price")
+            "symbol": symbol,
+            "timeframe": "5m",
+            "current_price": current_price,
+            "SMA5": round(sma5, 4),
+            "SMA10": round(sma10, 4),
+            "signal": signal,
+            "warning": "This is technical analysis, not guaranteed financial advice."
         })
 
     except Exception as e:
