@@ -10,6 +10,15 @@ MEXC_URL = "https://api.mexc.com/api/v3/klines"
 
 
 # =========================================================
+# SETTINGS
+# =========================================================
+
+DEFAULT_RISK_PERCENT = 1.0
+DEFAULT_ACCOUNT_SIZE = 1000.0
+FEE_PERCENT_PER_SIDE = 0.05
+
+
+# =========================================================
 # 1. GET MARKET DATA
 # =========================================================
 
@@ -45,14 +54,23 @@ def get_data(symbol="BTCUSDT", interval="5m", limit=500):
         "quote_volume"
     ])
 
-    for col in [
+    numeric_cols = [
         "open",
         "high",
         "low",
         "close",
         "volume"
-    ]:
-        df[col] = pd.to_numeric(df[col])
+    ]
+
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
+
+    df = df.dropna().reset_index(
+        drop=True
+    )
 
     return df
 
@@ -63,58 +81,110 @@ def get_data(symbol="BTCUSDT", interval="5m", limit=500):
 
 def calculate_indicators(df):
 
-    # EMA Trend
-    df["EMA20"] = df["close"].ewm(
-        span=20,
-        adjust=False
-    ).mean()
+    df = df.copy()
 
-    df["EMA50"] = df["close"].ewm(
-        span=50,
-        adjust=False
-    ).mean()
+    # EMA
+    df["EMA20"] = (
+        df["close"]
+        .ewm(
+            span=20,
+            adjust=False
+        )
+        .mean()
+    )
 
-    df["EMA200"] = df["close"].ewm(
-        span=200,
-        adjust=False
-    ).mean()
+    df["EMA50"] = (
+        df["close"]
+        .ewm(
+            span=50,
+            adjust=False
+        )
+        .mean()
+    )
+
+    df["EMA200"] = (
+        df["close"]
+        .ewm(
+            span=200,
+            adjust=False
+        )
+        .mean()
+    )
 
     # RSI
     delta = df["close"].diff()
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.clip(
+        lower=0
+    )
 
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
+    loss = -delta.clip(
+        upper=0
+    )
 
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan
+    avg_gain = (
+        gain
+        .rolling(14)
+        .mean()
+    )
+
+    avg_loss = (
+        loss
+        .rolling(14)
+        .mean()
+    )
+
+    rs = (
+        avg_gain /
+        avg_loss.replace(
+            0,
+            np.nan
+        )
     )
 
     df["RSI"] = (
         100 -
-        (100 / (1 + rs))
+        (
+            100 /
+            (1 + rs)
+        )
     )
 
     # MACD
-    ema12 = df["close"].ewm(
-        span=12,
-        adjust=False
-    ).mean()
+    ema12 = (
+        df["close"]
+        .ewm(
+            span=12,
+            adjust=False
+        )
+        .mean()
+    )
 
-    ema26 = df["close"].ewm(
-        span=26,
-        adjust=False
-    ).mean()
+    ema26 = (
+        df["close"]
+        .ewm(
+            span=26,
+            adjust=False
+        )
+        .mean()
+    )
 
-    df["MACD"] = ema12 - ema26
+    df["MACD"] = (
+        ema12 - ema26
+    )
 
     df["MACD_SIGNAL"] = (
         df["MACD"]
-        .ewm(span=9, adjust=False)
+        .ewm(
+            span=9,
+            adjust=False
+        )
         .mean()
+    )
+
+    df["MACD_HIST"] = (
+        df["MACD"] -
+        df["MACD_SIGNAL"]
     )
 
     # ATR
@@ -140,7 +210,9 @@ def calculate_indicators(df):
             low_close
         ],
         axis=1
-    ).max(axis=1)
+    ).max(
+        axis=1
+    )
 
     df["ATR"] = (
         true_range
@@ -158,7 +230,29 @@ def calculate_indicators(df):
     # Momentum
     df["MOMENTUM"] = (
         df["close"]
-        .pct_change(5) * 100
+        .pct_change(5)
+        * 100
+    )
+
+    # Candle body
+    df["BODY"] = abs(
+        df["close"] -
+        df["open"]
+    )
+
+    # Candle range
+    df["RANGE"] = (
+        df["high"] -
+        df["low"]
+    )
+
+    # Body strength
+    df["BODY_RATIO"] = (
+        df["BODY"] /
+        df["RANGE"].replace(
+            0,
+            np.nan
+        )
     )
 
     return df
@@ -170,7 +264,9 @@ def calculate_indicators(df):
 
 def support_resistance(df):
 
-    recent = df.tail(50)
+    recent = df.iloc[
+        -51:-1
+    ]
 
     support = float(
         recent["low"].min()
@@ -189,23 +285,53 @@ def support_resistance(df):
 
 def market_structure(df):
 
-    recent = df.tail(10)
+    recent = df.tail(
+        20
+    )
 
-    first_high = recent["high"].iloc[:5].max()
-    second_high = recent["high"].iloc[5:].max()
+    first_half = recent.iloc[
+        :10
+    ]
 
-    first_low = recent["low"].iloc[:5].min()
-    second_low = recent["low"].iloc[5:].min()
+    second_half = recent.iloc[
+        10:
+    ]
+
+    first_high = (
+        first_half["high"]
+        .max()
+    )
+
+    second_high = (
+        second_half["high"]
+        .max()
+    )
+
+    first_low = (
+        first_half["low"]
+        .min()
+    )
+
+    second_low = (
+        second_half["low"]
+        .min()
+    )
 
     if (
-        second_high > first_high
-        and second_low > first_low
+        second_high >
+        first_high
+        and
+        second_low >
+        first_low
     ):
         return "BULLISH"
 
     if (
-        second_high < first_high
-        and second_low < first_low
+        second_high <
+        first_high
+        and
+        second_low <
+        first_low
     ):
         return "BEARISH"
 
@@ -213,7 +339,49 @@ def market_structure(df):
 
 
 # =========================================================
-# 5. BREAKOUT / BREAKDOWN
+# 5. TRENDLINE ESTIMATE
+# =========================================================
+
+def trendline_analysis(df):
+
+    recent = df.tail(
+        20
+    )
+
+    first_price = float(
+        recent["close"].iloc[
+            0
+        ]
+    )
+
+    last_price = float(
+        recent["close"].iloc[
+            -1
+        ]
+    )
+
+    change = (
+        (
+            last_price -
+            first_price
+        )
+        /
+        first_price
+    ) * 100
+
+    if change > 0.5:
+
+        return "UPTREND"
+
+    if change < -0.5:
+
+        return "DOWNTREND"
+
+    return "FLAT"
+
+
+# =========================================================
+# 6. BREAKOUT / BREAKDOWN
 # =========================================================
 
 def breakout_analysis(
@@ -222,34 +390,50 @@ def breakout_analysis(
     resistance
 ):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
-    previous = df.iloc[-2]
+    previous = df.iloc[
+        -2
+    ]
 
     if (
-        last["close"] > resistance
-        and previous["close"] <= resistance
+        last["close"] >
+        resistance
+        and
+        previous["close"] <=
+        resistance
     ):
+
         return "BREAKOUT"
 
     if (
-        last["close"] < support
-        and previous["close"] >= support
+        last["close"] <
+        support
+        and
+        previous["close"] >=
+        support
     ):
+
         return "BREAKDOWN"
 
     return "NO_BREAKOUT"
 
 
 # =========================================================
-# 6. GAP DETECTION
+# 7. GAP DETECTION
 # =========================================================
 
 def gap_analysis(df):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
-    previous = df.iloc[-2]
+    previous = df.iloc[
+        -2
+    ]
 
     gap_percent = (
         (
@@ -272,7 +456,7 @@ def gap_analysis(df):
 
 
 # =========================================================
-# 7. TRAP / FAKE BREAKOUT RISK
+# 8. FAKE BREAKOUT / LIQUIDITY TRAP ESTIMATE
 # =========================================================
 
 def trap_analysis(
@@ -281,28 +465,44 @@ def trap_analysis(
     resistance
 ):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
     volume_confirmed = (
         last["volume"] >
         last["VOL_AVG"]
     )
 
-    # Price moved above resistance
-    # but closed back below it
     fake_breakout = (
-        last["high"] > resistance
-        and last["close"] < resistance
+        last["high"] >
+        resistance
+        and
+        last["close"] <
+        resistance
     )
 
-    # Price moved below support
-    # but closed back above it
     fake_breakdown = (
-        last["low"] < support
-        and last["close"] > support
+        last["low"] <
+        support
+        and
+        last["close"] >
+        support
     )
 
-    if fake_breakout or fake_breakdown:
+    long_wick = (
+        last["RANGE"] >
+        0
+        and
+        last["BODY_RATIO"] <
+        0.35
+    )
+
+    if (
+        fake_breakout
+        or
+        fake_breakdown
+    ):
 
         if not volume_confirmed:
 
@@ -310,44 +510,135 @@ def trap_analysis(
 
         return "MEDIUM"
 
+    if long_wick:
+
+        return "MEDIUM"
+
     return "LOW"
 
 
 # =========================================================
-# 8. COMBINED SIGNAL ENGINE
+# 9. MONEY MANAGEMENT
 # =========================================================
 
-def generate_analysis(df):
+def money_management(
+    entry,
+    stop_loss,
+    account_size,
+    risk_percent
+):
 
-    last = df.iloc[-1]
+    risk_amount = (
+        account_size *
+        (
+            risk_percent /
+            100
+        )
+    )
+
+    price_risk = abs(
+        entry -
+        stop_loss
+    )
+
+    if price_risk <= 0:
+
+        return {
+            "risk_amount": 0,
+            "position_size": 0,
+            "position_value": 0
+        }
+
+    position_size = (
+        risk_amount /
+        price_risk
+    )
+
+    position_value = (
+        position_size *
+        entry
+    )
+
+    return {
+
+        "risk_amount": round(
+            risk_amount,
+            4
+        ),
+
+        "position_size": round(
+            position_size,
+            8
+        ),
+
+        "position_value": round(
+            position_value,
+            4
+        )
+    }
+
+
+# =========================================================
+# 10. COMBINED ANALYSIS
+# =========================================================
+
+def generate_analysis(
+    df,
+    account_size=1000,
+    risk_percent=1
+):
+
+    last = df.iloc[
+        -1
+    ]
 
     support, resistance = (
-        support_resistance(df)
+        support_resistance(
+            df
+        )
     )
 
-    structure = market_structure(df)
-
-    breakout = breakout_analysis(
-        df,
-        support,
-        resistance
+    structure = (
+        market_structure(
+            df
+        )
     )
 
-    gap = gap_analysis(df)
+    trendline = (
+        trendline_analysis(
+            df
+        )
+    )
 
-    trap_risk = trap_analysis(
-        df,
-        support,
-        resistance
+    breakout = (
+        breakout_analysis(
+            df,
+            support,
+            resistance
+        )
+    )
+
+    gap = (
+        gap_analysis(
+            df
+        )
+    )
+
+    trap_risk = (
+        trap_analysis(
+            df,
+            support,
+            resistance
+        )
     )
 
     score = 0
 
     reasons = []
 
-    # -------------------------
+    # =====================================================
     # EMA TREND
-    # -------------------------
+    # =====================================================
 
     if (
         last["EMA20"] >
@@ -358,7 +649,7 @@ def generate_analysis(df):
         score += 3
 
         reasons.append(
-            "Strong bullish EMA trend"
+            "EMA trend bullish"
         )
 
     elif (
@@ -370,38 +661,62 @@ def generate_analysis(df):
         score -= 3
 
         reasons.append(
-            "Strong bearish EMA trend"
+            "EMA trend bearish"
         )
 
-    # -------------------------
+    # =====================================================
     # RSI
-    # -------------------------
+    # =====================================================
 
     if (
-        last["RSI"] > 50
-        and last["RSI"] < 70
+        last["RSI"] >
+        50
+        and
+        last["RSI"] <
+        70
     ):
 
         score += 1
 
         reasons.append(
-            "Bullish RSI momentum"
+            "RSI bullish zone"
         )
 
     elif (
-        last["RSI"] < 50
-        and last["RSI"] > 30
+        last["RSI"] <
+        50
+        and
+        last["RSI"] >
+        30
     ):
 
         score -= 1
 
         reasons.append(
-            "Bearish RSI momentum"
+            "RSI bearish zone"
         )
 
-    # -------------------------
+    elif (
+        last["RSI"] >=
+        70
+    ):
+
+        reasons.append(
+            "RSI overbought"
+        )
+
+    elif (
+        last["RSI"] <=
+        30
+    ):
+
+        reasons.append(
+            "RSI oversold"
+        )
+
+    # =====================================================
     # MACD
-    # -------------------------
+    # =====================================================
 
     if (
         last["MACD"] >
@@ -422,9 +737,35 @@ def generate_analysis(df):
             "MACD bearish"
         )
 
-    # -------------------------
+    # =====================================================
+    # MOMENTUM
+    # =====================================================
+
+    if (
+        last["MOMENTUM"] >
+        0.2
+    ):
+
+        score += 1
+
+        reasons.append(
+            "Positive momentum"
+        )
+
+    elif (
+        last["MOMENTUM"] <
+        -0.2
+    ):
+
+        score -= 1
+
+        reasons.append(
+            "Negative momentum"
+        )
+
+    # =====================================================
     # MARKET STRUCTURE
-    # -------------------------
+    # =====================================================
 
     if structure == "BULLISH":
 
@@ -442,9 +783,29 @@ def generate_analysis(df):
             "Bearish market structure"
         )
 
-    # -------------------------
+    # =====================================================
+    # TRENDLINE
+    # =====================================================
+
+    if trendline == "UPTREND":
+
+        score += 1
+
+        reasons.append(
+            "Price trendline rising"
+        )
+
+    elif trendline == "DOWNTREND":
+
+        score -= 1
+
+        reasons.append(
+            "Price trendline falling"
+        )
+
+    # =====================================================
     # BREAKOUT
-    # -------------------------
+    # =====================================================
 
     if breakout == "BREAKOUT":
 
@@ -462,9 +823,9 @@ def generate_analysis(df):
             "Support breakdown"
         )
 
-    # -------------------------
+    # =====================================================
     # VOLUME
-    # -------------------------
+    # =====================================================
 
     volume_confirmed = (
         last["volume"] >
@@ -485,18 +846,19 @@ def generate_analysis(df):
 
             score -= 1
 
-    # -------------------------
+    # =====================================================
     # TRAP FILTER
-    # -------------------------
+    # =====================================================
 
     if trap_risk == "HIGH":
 
         score = int(
-            score * 0.5
+            score *
+            0.5
         )
 
         reasons.append(
-            "High fake-breakout trap risk"
+            "High trap risk"
         )
 
     elif trap_risk == "MEDIUM":
@@ -506,28 +868,44 @@ def generate_analysis(df):
         )
 
     # =====================================================
+    # GAP
+    # =====================================================
+
+    if gap == "GAP_UP":
+
+        reasons.append(
+            "Gap up detected"
+        )
+
+    elif gap == "GAP_DOWN":
+
+        reasons.append(
+            "Gap down detected"
+        )
+
+    # =====================================================
     # FINAL SIGNAL
     # =====================================================
 
-    if score >= 6:
+    if score >= 7:
 
         signal = "STRONG BUY"
 
-    elif score >= 3:
+    elif score >= 4:
 
         signal = "BUY"
 
-    elif score <= -6:
+    elif score <= -7:
 
         signal = "STRONG SELL"
 
-    elif score <= -3:
+    elif score <= -4:
 
         signal = "SELL"
 
     else:
 
-        signal = "NEUTRAL"
+        signal = "WAIT"
 
     # =====================================================
     # CONFIDENCE
@@ -535,7 +913,9 @@ def generate_analysis(df):
 
     confidence = min(
         95,
-        50 + abs(score) * 5
+        50 +
+        abs(score) *
+        4
     )
 
     # =====================================================
@@ -550,6 +930,15 @@ def generate_analysis(df):
         last["ATR"]
     )
 
+    if not np.isfinite(
+        atr
+    ) or atr <= 0:
+
+        atr = (
+            price *
+            0.005
+        )
+
     if signal in [
         "BUY",
         "STRONG BUY"
@@ -557,19 +946,39 @@ def generate_analysis(df):
 
         entry = price
 
-        stop_loss = (
+        stop_loss = max(
             price -
-            (atr * 1.5)
+            (
+                atr *
+                1.5
+            ),
+            support
         )
+
+        if stop_loss >= price:
+
+            stop_loss = (
+                price -
+                (
+                    atr *
+                    1.5
+                )
+            )
 
         take_profit_1 = (
             price +
-            (atr * 2)
+            (
+                atr *
+                2
+            )
         )
 
         take_profit_2 = (
             price +
-            (atr * 3)
+            (
+                atr *
+                3
+            )
         )
 
     elif signal in [
@@ -579,19 +988,39 @@ def generate_analysis(df):
 
         entry = price
 
-        stop_loss = (
+        stop_loss = min(
             price +
-            (atr * 1.5)
+            (
+                atr *
+                1.5
+            ),
+            resistance
         )
+
+        if stop_loss <= price:
+
+            stop_loss = (
+                price +
+                (
+                    atr *
+                    1.5
+                )
+            )
 
         take_profit_1 = (
             price -
-            (atr * 2)
+            (
+                atr *
+                2
+            )
         )
 
         take_profit_2 = (
             price -
-            (atr * 3)
+            (
+                atr *
+                3
+            )
         )
 
     else:
@@ -604,109 +1033,214 @@ def generate_analysis(df):
 
         take_profit_2 = None
 
+    # =====================================================
+    # MONEY MANAGEMENT
+    # =====================================================
+
+    if stop_loss is not None:
+
+        risk_data = (
+            money_management(
+                entry,
+                stop_loss,
+                account_size,
+                risk_percent
+            )
+        )
+
+        risk_distance = abs(
+            entry -
+            stop_loss
+        )
+
+        reward_distance = abs(
+            take_profit_1 -
+            entry
+        )
+
+        if risk_distance > 0:
+
+            risk_reward = (
+                reward_distance /
+                risk_distance
+            )
+
+        else:
+
+            risk_reward = 0
+
+    else:
+
+        risk_data = {
+            "risk_amount": 0,
+            "position_size": 0,
+            "position_value": 0
+        }
+
+        risk_reward = 0
+
     return {
 
-        "signal": signal,
+        "signal":
+            signal,
 
-        "confidence": round(
-            confidence,
-            2
-        ),
-
-        "score": score,
-
-        "current_price": round(
-            price,
-            6
-        ),
-
-        "trend": structure,
-
-        "support": round(
-            support,
-            6
-        ),
-
-        "resistance": round(
-            resistance,
-            6
-        ),
-
-        "breakout": breakout,
-
-        "gap": gap,
-
-        "trap_risk": trap_risk,
-
-        "entry": round(
-            entry,
-            6
-        ),
-
-        "stop_loss": (
+        "confidence":
             round(
-                stop_loss,
-                6
-            )
-            if stop_loss
-            else None
-        ),
+                confidence,
+                2
+            ),
 
-        "take_profit_1": (
+        "score":
+            score,
+
+        "current_price":
             round(
-                take_profit_1,
+                price,
                 6
-            )
-            if take_profit_1
-            else None
-        ),
+            ),
 
-        "take_profit_2": (
+        "market_structure":
+            structure,
+
+        "trendline":
+            trendline,
+
+        "support":
             round(
-                take_profit_2,
+                support,
                 6
-            )
-            if take_profit_2
-            else None
-        ),
+            ),
 
-        "rsi": round(
-            float(last["RSI"]),
-            2
-        ),
+        "resistance":
+            round(
+                resistance,
+                6
+            ),
 
-        "ema20": round(
-            float(last["EMA20"]),
-            6
-        ),
+        "breakout":
+            breakout,
 
-        "ema50": round(
-            float(last["EMA50"]),
-            6
-        ),
+        "gap":
+            gap,
 
-        "ema200": round(
-            float(last["EMA200"]),
-            6
-        ),
+        "trap_risk_estimate":
+            trap_risk,
 
-        "macd": round(
-            float(last["MACD"]),
-            6
-        ),
+        "entry":
+            round(
+                entry,
+                6
+            ),
 
-        "atr": round(
-            atr,
-            6
-        ),
+        "stop_loss":
+            (
+                round(
+                    stop_loss,
+                    6
+                )
+                if stop_loss
+                else None
+            ),
 
-        "momentum_percent": round(
-            float(last["MOMENTUM"]),
-            4
-        ),
+        "take_profit_1":
+            (
+                round(
+                    take_profit_1,
+                    6
+                )
+                if take_profit_1
+                else None
+            ),
+
+        "take_profit_2":
+            (
+                round(
+                    take_profit_2,
+                    6
+                )
+                if take_profit_2
+                else None
+            ),
+
+        "risk_reward":
+            round(
+                risk_reward,
+                2
+            ),
+
+        "risk_amount":
+            risk_data[
+                "risk_amount"
+            ],
+
+        "position_size":
+            risk_data[
+                "position_size"
+            ],
+
+        "position_value":
+            risk_data[
+                "position_value"
+            ],
+
+        "rsi":
+            round(
+                float(
+                    last["RSI"]
+                ),
+                2
+            ),
+
+        "ema20":
+            round(
+                float(
+                    last["EMA20"]
+                ),
+                6
+            ),
+
+        "ema50":
+            round(
+                float(
+                    last["EMA50"]
+                ),
+                6
+            ),
+
+        "ema200":
+            round(
+                float(
+                    last["EMA200"]
+                ),
+                6
+            ),
+
+        "macd":
+            round(
+                float(
+                    last["MACD"]
+                ),
+                6
+            ),
+
+        "atr":
+            round(
+                atr,
+                6
+            ),
+
+        "momentum_percent":
+            round(
+                float(
+                    last["MOMENTUM"]
+                ),
+                4
+            ),
 
         "volume_confirmed":
-            bool(volume_confirmed),
+            bool(
+                volume_confirmed
+            ),
 
         "reasons":
             reasons
@@ -714,15 +1248,15 @@ def generate_analysis(df):
 
 
 # =========================================================
-# 9. LIVE ANALYSIS API
+# 11. LIVE ANALYSIS
 # =========================================================
 
 @app.route("/")
 def home():
 
     return (
-        "GM AI Trading Bot v5 "
-        "All-In-One Analysis System is running!"
+        "GM AI Trading Bot v6 "
+        "All-In-One System is running!"
     )
 
 
@@ -731,10 +1265,38 @@ def analysis(symbol):
 
     try:
 
-        symbol = symbol.upper()
+        account_size = float(
+            request.args.get(
+                "account",
+                DEFAULT_ACCOUNT_SIZE
+            )
+        )
+
+        risk_percent = float(
+            request.args.get(
+                "risk",
+                DEFAULT_RISK_PERCENT
+            )
+        )
+
+        if account_size <= 0:
+
+            account_size = (
+                DEFAULT_ACCOUNT_SIZE
+            )
+
+        if (
+            risk_percent <= 0
+            or
+            risk_percent > 5
+        ):
+
+            risk_percent = (
+                DEFAULT_RISK_PERCENT
+            )
 
         df = get_data(
-            symbol,
+            symbol.upper(),
             "5m",
             500
         )
@@ -744,21 +1306,37 @@ def analysis(symbol):
         )
 
         result = generate_analysis(
-            df
+            df,
+            account_size,
+            risk_percent
         )
 
-        result["status"] = "success"
+        result["status"] = (
+            "success"
+        )
 
-        result["symbol"] = symbol
+        result["symbol"] = (
+            symbol.upper()
+        )
 
-        result["timeframe"] = "5m"
+        result["timeframe"] = (
+            "5m"
+        )
+
+        result["account_size"] = (
+            account_size
+        )
+
+        result["risk_percent"] = (
+            risk_percent
+        )
 
         result["warning"] = (
-            "Technical analysis only. "
+            "Analysis only. "
             "No guaranteed prediction. "
-            "Trap and liquidation risk are "
-            "estimated unless direct liquidation "
-            "data is available."
+            "Trap/liquidation risk is estimated "
+            "from price and volume because direct "
+            "liquidation data is not included."
         )
 
         return jsonify(
@@ -779,7 +1357,7 @@ def analysis(symbol):
 
 
 # =========================================================
-# 10. BACKTEST
+# 12. IMPROVED BACKTEST
 # =========================================================
 
 @app.route("/backtest/<symbol>")
@@ -791,6 +1369,20 @@ def backtest(symbol):
             request.args.get(
                 "limit",
                 500
+            )
+        )
+
+        account_size = float(
+            request.args.get(
+                "account",
+                DEFAULT_ACCOUNT_SIZE
+            )
+        )
+
+        risk_percent = float(
+            request.args.get(
+                "risk",
+                DEFAULT_RISK_PERCENT
             )
         )
 
@@ -809,15 +1401,26 @@ def backtest(symbol):
             df
         )
 
-        correct = 0
+        wins = 0
 
-        wrong = 0
+        losses = 0
 
-        total_signals = 0
+        total_trades = 0
 
         neutral = 0
 
-        # One next candle outcome
+        pnl = 0.0
+
+        equity = account_size
+
+        peak_equity = (
+            account_size
+        )
+
+        max_drawdown = 0.0
+
+        results = []
+
         for i in range(
             200,
             len(df) - 1
@@ -831,7 +1434,9 @@ def backtest(symbol):
 
             analysis_result = (
                 generate_analysis(
-                    historical
+                    historical,
+                    account_size,
+                    risk_percent
                 )
             )
 
@@ -841,61 +1446,304 @@ def backtest(symbol):
                 ]
             )
 
-            current_price = float(
+            if signal not in [
+                "BUY",
+                "STRONG BUY",
+                "SELL",
+                "STRONG SELL"
+            ]:
+
+                neutral += 1
+
+                continue
+
+            entry = float(
                 df.iloc[i]["close"]
             )
 
-            next_price = float(
-                df.iloc[
-                    i + 1
-                ]["close"]
+            atr = float(
+                df.iloc[i]["ATR"]
             )
+
+            if (
+                not np.isfinite(
+                    atr
+                )
+                or
+                atr <= 0
+            ):
+
+                continue
 
             if signal in [
                 "BUY",
                 "STRONG BUY"
             ]:
 
-                total_signals += 1
+                stop = (
+                    entry -
+                    (
+                        atr *
+                        1.5
+                    )
+                )
 
-                if (
-                    next_price >
-                    current_price
-                ):
+                target = (
+                    entry +
+                    (
+                        atr *
+                        2
+                    )
+                )
 
-                    correct += 1
-
-                else:
-
-                    wrong += 1
-
-            elif signal in [
-                "SELL",
-                "STRONG SELL"
-            ]:
-
-                total_signals += 1
-
-                if (
-                    next_price <
-                    current_price
-                ):
-
-                    correct += 1
-
-                else:
-
-                    wrong += 1
+                direction = (
+                    "LONG"
+                )
 
             else:
 
-                neutral += 1
+                stop = (
+                    entry +
+                    (
+                        atr *
+                        1.5
+                    )
+                )
 
-        if total_signals > 0:
+                target = (
+                    entry -
+                    (
+                        atr *
+                        2
+                    )
+                )
+
+                direction = (
+                    "SHORT"
+                )
+
+            outcome = (
+                "OPEN"
+            )
+
+            exit_price = None
+
+            # Check next 3 candles
+            end_index = min(
+                i + 4,
+                len(df)
+            )
+
+            for j in range(
+                i + 1,
+                end_index
+            ):
+
+                candle_high = float(
+                    df.iloc[j]["high"]
+                )
+
+                candle_low = float(
+                    df.iloc[j]["low"]
+                )
+
+                if direction == "LONG":
+
+                    if candle_low <= stop:
+
+                        outcome = (
+                            "LOSS"
+                        )
+
+                        exit_price = (
+                            stop
+                        )
+
+                        break
+
+                    if candle_high >= target:
+
+                        outcome = (
+                            "WIN"
+                        )
+
+                        exit_price = (
+                            target
+                        )
+
+                        break
+
+                else:
+
+                    if candle_high >= stop:
+
+                        outcome = (
+                            "LOSS"
+                        )
+
+                        exit_price = (
+                            stop
+                        )
+
+                        break
+
+                    if candle_low <= target:
+
+                        outcome = (
+                            "WIN"
+                        )
+
+                        exit_price = (
+                            target
+                        )
+
+                        break
+
+            if outcome == "OPEN":
+
+                exit_price = float(
+                    df.iloc[
+                        end_index - 1
+                    ]["close"]
+                )
+
+                if direction == "LONG":
+
+                    outcome = (
+                        "WIN"
+                        if exit_price >
+                        entry
+                        else
+                        "LOSS"
+                    )
+
+                else:
+
+                    outcome = (
+                        "WIN"
+                        if exit_price <
+                        entry
+                        else
+                        "LOSS"
+                    )
+
+            total_trades += 1
+
+            risk_amount = (
+                equity *
+                (
+                    risk_percent /
+                    100
+                )
+            )
+
+            if direction == "LONG":
+
+                price_change = (
+                    exit_price -
+                    entry
+                )
+
+            else:
+
+                price_change = (
+                    entry -
+                    exit_price
+                )
+
+            price_risk = abs(
+                entry -
+                stop
+            )
+
+            if price_risk > 0:
+
+                position_size = (
+                    risk_amount /
+                    price_risk
+                )
+
+            else:
+
+                position_size = 0
+
+            trade_pnl = (
+                price_change *
+                position_size
+            )
+
+            # Approximate trading fees
+            fee = (
+                (
+                    entry +
+                    exit_price
+                )
+                *
+                position_size
+                *
+                (
+                    FEE_PERCENT_PER_SIDE /
+                    100
+                )
+            )
+
+            trade_pnl -= fee
+
+            pnl += trade_pnl
+
+            equity += trade_pnl
+
+            if outcome == "WIN":
+
+                wins += 1
+
+            else:
+
+                losses += 1
+
+            peak_equity = max(
+                peak_equity,
+                equity
+            )
+
+            drawdown = (
+                (
+                    peak_equity -
+                    equity
+                )
+                /
+                peak_equity
+            ) * 100
+
+            max_drawdown = max(
+                max_drawdown,
+                drawdown
+            )
+
+            results.append({
+
+                "signal":
+                    signal,
+
+                "direction":
+                    direction,
+
+                "outcome":
+                    outcome,
+
+                "pnl":
+                    round(
+                        trade_pnl,
+                        4
+                    )
+
+            })
+
+        if total_trades > 0:
 
             win_rate = (
-                correct /
-                total_signals
+                wins /
+                total_trades
             ) * 100
 
         else:
@@ -913,19 +1761,19 @@ def backtest(symbol):
             "timeframe":
                 "5m",
 
-            "candles_tested":
-                len(df) - 200,
+            "candles_used":
+                len(df),
 
-            "total_signals":
-                total_signals,
+            "total_trades":
+                total_trades,
 
-            "correct_signals":
-                correct,
+            "wins":
+                wins,
 
-            "wrong_signals":
-                wrong,
+            "losses":
+                losses,
 
-            "neutral_signals":
+            "neutral":
                 neutral,
 
             "win_rate_percent":
@@ -934,9 +1782,37 @@ def backtest(symbol):
                     2
                 ),
 
+            "starting_balance":
+                round(
+                    account_size,
+                    2
+                ),
+
+            "estimated_pnl":
+                round(
+                    pnl,
+                    2
+                ),
+
+            "ending_balance":
+                round(
+                    equity,
+                    2
+                ),
+
+            "max_drawdown_percent":
+                round(
+                    max_drawdown,
+                    2
+                ),
+
+            "risk_per_trade_percent":
+                risk_percent,
+
             "note":
-                "Historical backtest only. "
-                "It does not guarantee future results."
+                "Historical simulation only. "
+                "Fees are approximate. "
+                "Results do not guarantee future performance."
 
         })
 
@@ -954,7 +1830,7 @@ def backtest(symbol):
 
 
 # =========================================================
-# 11. RUN APP
+# 13. RUN
 # =========================================================
 
 if __name__ == "__main__":
