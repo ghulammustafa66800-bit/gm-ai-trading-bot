@@ -9,12 +9,26 @@ app = Flask(__name__)
 
 MEXC_BASE = "https://api.mexc.com"
 
+# =========================================================
+# SETTINGS
+# =========================================================
+
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_LIMIT = 1000
 MIN_CANDLES = 250
 
+# Signal threshold
+SIGNAL_THRESHOLD = 7
+
+# ATR settings
+SL_ATR_MULTIPLIER = 1.5
+TP1_RR = 1.5
+TP2_RR = 2.0
+TP3_RR = 3.0
+
+
 # =========================================================
-# BASIC HELPERS
+# HELPERS
 # =========================================================
 
 def normalize_symbol(symbol):
@@ -31,18 +45,25 @@ def normalize_symbol(symbol):
 def safe_float(value, default=0.0):
     try:
         value = float(value)
+
         if np.isnan(value) or np.isinf(value):
             return default
+
         return value
+
     except:
         return default
 
 
 # =========================================================
-# MEXC MARKET DATA
+# MEXC DATA
 # =========================================================
 
-def get_data(symbol, interval="5m", limit=1000):
+def get_data(
+    symbol,
+    interval="5m",
+    limit=1000
+):
 
     symbol = normalize_symbol(symbol)
 
@@ -51,7 +72,9 @@ def get_data(symbol, interval="5m", limit=1000):
         min(int(limit), 1000)
     )
 
-    url = f"{MEXC_BASE}/api/v3/klines"
+    url = (
+        f"{MEXC_BASE}/api/v3/klines"
+    )
 
     params = {
         "symbol": symbol,
@@ -59,26 +82,24 @@ def get_data(symbol, interval="5m", limit=1000):
         "limit": limit
     }
 
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            timeout=20
-        )
-    except Exception as e:
-        raise Exception(
-            f"MEXC connection error: {str(e)}"
-        )
+    response = requests.get(
+        url,
+        params=params,
+        timeout=20
+    )
 
     if response.status_code != 200:
+
         raise Exception(
-            f"MEXC API error {response.status_code}: "
+            f"MEXC API error "
+            f"{response.status_code}: "
             f"{response.text[:300]}"
         )
 
     data = response.json()
 
     if not isinstance(data, list):
+
         raise Exception(
             f"Unexpected MEXC response: {data}"
         )
@@ -90,14 +111,16 @@ def get_data(symbol, interval="5m", limit=1000):
         if len(candle) < 6:
             continue
 
-        rows.append([
-            candle[0],
-            candle[1],
-            candle[2],
-            candle[3],
-            candle[4],
-            candle[5]
-        ])
+        rows.append(
+            [
+                candle[0],
+                candle[1],
+                candle[2],
+                candle[3],
+                candle[4],
+                candle[5]
+            ]
+        )
 
     df = pd.DataFrame(
         rows,
@@ -124,11 +147,16 @@ def get_data(symbol, interval="5m", limit=1000):
             errors="coerce"
         )
 
-    df = df.dropna().reset_index(drop=True)
+    df = (
+        df
+        .dropna()
+        .reset_index(drop=True)
+    )
 
     if len(df) < MIN_CANDLES:
+
         raise Exception(
-            "Not enough market data"
+            "Not enough candles"
         )
 
     return df
@@ -345,17 +373,44 @@ def add_indicators(df):
 
 
 # =========================================================
+# MARKET STRUCTURE
+# =========================================================
+
+def market_structure(df):
+
+    data = df.tail(60)
+
+    first = data.iloc[:30]
+
+    second = data.iloc[30:]
+
+    h1 = first["high"].max()
+    h2 = second["high"].max()
+
+    l1 = first["low"].min()
+    l2 = second["low"].min()
+
+    if h2 > h1 and l2 > l1:
+
+        return "BULLISH"
+
+    if h2 < h1 and l2 < l1:
+
+        return "BEARISH"
+
+    return "SIDEWAYS"
+
+
+# =========================================================
 # SUPPORT / RESISTANCE
 # =========================================================
 
 def get_levels(df):
 
-    # Exclude current candle
-    # to avoid look-ahead bias
-
-    history = df.iloc[
-        :-1
-    ].tail(120)
+    history = (
+        df.iloc[:-1]
+        .tail(120)
+    )
 
     support = float(
         history["low"].min()
@@ -378,43 +433,6 @@ def get_levels(df):
         "resistance": resistance,
         "pivot": float(pivot)
     }
-
-
-# =========================================================
-# MARKET STRUCTURE
-# =========================================================
-
-def get_market_structure(df):
-
-    data = df.tail(60)
-
-    first = data.iloc[:30]
-
-    second = data.iloc[30:]
-
-    high1 = first["high"].max()
-    high2 = second["high"].max()
-
-    low1 = first["low"].min()
-    low2 = second["low"].min()
-
-    if (
-        high2 > high1
-        and
-        low2 > low1
-    ):
-
-        return "BULLISH"
-
-    if (
-        high2 < high1
-        and
-        low2 < low1
-    ):
-
-        return "BEARISH"
-
-    return "SIDEWAYS"
 
 
 # =========================================================
@@ -441,17 +459,11 @@ def get_trend(df):
 
         return "STRONG_BEARISH"
 
-    if (
-        last["EMA20"] >
-        last["EMA50"]
-    ):
+    if last["EMA20"] > last["EMA50"]:
 
         return "BULLISH"
 
-    if (
-        last["EMA20"] <
-        last["EMA50"]
-    ):
+    if last["EMA20"] < last["EMA50"]:
 
         return "BEARISH"
 
@@ -459,7 +471,7 @@ def get_trend(df):
 
 
 # =========================================================
-# LIQUIDITY SWEEP / TRAP
+# LIQUIDITY / TRAP
 # =========================================================
 
 def liquidity_analysis(
@@ -469,13 +481,9 @@ def liquidity_analysis(
 
     last = df.iloc[-1]
 
-    support = levels[
-        "support"
-    ]
+    support = levels["support"]
 
-    resistance = levels[
-        "resistance"
-    ]
+    resistance = levels["resistance"]
 
     volume_ratio = safe_float(
         last["VOLUME_RATIO"],
@@ -483,32 +491,24 @@ def liquidity_analysis(
     )
 
     bullish_sweep = (
-        last["low"] <
-        support
+        last["low"] < support
         and
-        last["close"] >
-        support
+        last["close"] > support
     )
 
     bearish_sweep = (
-        last["high"] >
-        resistance
+        last["high"] > resistance
         and
-        last["close"] <
-        resistance
+        last["close"] < resistance
     )
 
     if bullish_sweep:
 
-        sweep = (
-            "BULLISH_LIQUIDITY_SWEEP"
-        )
+        sweep = "BULLISH_SWEEP"
 
     elif bearish_sweep:
 
-        sweep = (
-            "BEARISH_LIQUIDITY_SWEEP"
-        )
+        sweep = "BEARISH_SWEEP"
 
     else:
 
@@ -533,10 +533,10 @@ def liquidity_analysis(
 
 
 # =========================================================
-# CANDLE CONFIRMATION
+# CANDLE
 # =========================================================
 
-def candle_analysis(df):
+def candle_signal(df):
 
     last = df.iloc[-1]
 
@@ -552,53 +552,43 @@ def candle_analysis(df):
 
         return "NEUTRAL"
 
-    bullish_rejection = (
+    if (
         last["LOWER_WICK"] >
         body * 1.5
         and
         last["close"] >
         last["open"]
-    )
+    ):
 
-    bearish_rejection = (
+        return "BULLISH_REJECTION"
+
+    if (
         last["UPPER_WICK"] >
         body * 1.5
         and
         last["close"] <
         last["open"]
-    )
-
-    strong_bull = (
-        last["close"] >
-        last["open"]
-        and
-        body /
-        candle_range >
-        0.60
-    )
-
-    strong_bear = (
-        last["close"] <
-        last["open"]
-        and
-        body /
-        candle_range >
-        0.60
-    )
-
-    if bullish_rejection:
-
-        return "BULLISH_REJECTION"
-
-    if bearish_rejection:
+    ):
 
         return "BEARISH_REJECTION"
 
-    if strong_bull:
+    if (
+        last["close"] >
+        last["open"]
+        and
+        body / candle_range >
+        0.60
+    ):
 
         return "STRONG_BULLISH"
 
-    if strong_bear:
+    if (
+        last["close"] <
+        last["open"]
+        and
+        body / candle_range >
+        0.60
+    ):
 
         return "STRONG_BEARISH"
 
@@ -606,12 +596,10 @@ def candle_analysis(df):
 
 
 # =========================================================
-# TIMEFRAME ANALYSIS
+# MTF
 # =========================================================
 
-def timeframe_direction(
-    df
-):
+def timeframe_direction(df):
 
     last = df.iloc[-1]
 
@@ -634,9 +622,7 @@ def timeframe_direction(
     return "NEUTRAL"
 
 
-def multi_timeframe_analysis(
-    symbol
-):
+def get_mtf(symbol):
 
     intervals = [
         "5m",
@@ -645,7 +631,7 @@ def multi_timeframe_analysis(
         "4h"
     ]
 
-    result = {}
+    results = {}
 
     for interval in intervals:
 
@@ -661,30 +647,28 @@ def multi_timeframe_analysis(
                 data
             )
 
-            result[
+            results[
                 interval
             ] = timeframe_direction(
                 data
             )
 
-        except Exception as e:
+        except:
 
-            result[
+            results[
                 interval
             ] = "UNAVAILABLE"
 
-    bullish = sum(
-        1
-        for value
-        in result.values()
-        if value == "BULLISH"
+    bullish = list(
+        results.values()
+    ).count(
+        "BULLISH"
     )
 
-    bearish = sum(
-        1
-        for value
-        in result.values()
-        if value == "BEARISH"
+    bearish = list(
+        results.values()
+    ).count(
+        "BEARISH"
     )
 
     if bullish >= 3:
@@ -700,7 +684,7 @@ def multi_timeframe_analysis(
         confirmation = "MIXED"
 
     return {
-        "timeframes": result,
+        "timeframes": results,
         "confirmation": confirmation,
         "bullish_count": bullish,
         "bearish_count": bearish
@@ -711,12 +695,12 @@ def multi_timeframe_analysis(
 # SIGNAL ENGINE
 # =========================================================
 
-def generate_signal(
+def analyze_market(
     df,
     symbol,
     mtf,
-    account_size,
-    risk_percent
+    account_size=1000,
+    risk_percent=1
 ):
 
     last = df.iloc[-1]
@@ -729,7 +713,7 @@ def generate_signal(
         df
     )
 
-    structure = get_market_structure(
+    structure = market_structure(
         df
     )
 
@@ -738,7 +722,7 @@ def generate_signal(
         levels
     )
 
-    candle = candle_analysis(
+    candle = candle_signal(
         df
     )
 
@@ -755,7 +739,7 @@ def generate_signal(
         50
     )
 
-    volume_ratio = safe_float(
+    volume = safe_float(
         last["VOLUME_RATIO"],
         1
     )
@@ -772,16 +756,16 @@ def generate_signal(
 
     reasons = []
 
-    # -----------------------------------------------------
+    # -------------------------
     # TREND
-    # -----------------------------------------------------
+    # -------------------------
 
     if trend == "STRONG_BULLISH":
 
         score += 3
 
         reasons.append(
-            "Strong bullish EMA trend"
+            "Strong bullish EMA alignment"
         )
 
     elif trend == "STRONG_BEARISH":
@@ -789,7 +773,7 @@ def generate_signal(
         score -= 3
 
         reasons.append(
-            "Strong bearish EMA trend"
+            "Strong bearish EMA alignment"
         )
 
     elif trend == "BULLISH":
@@ -800,9 +784,9 @@ def generate_signal(
 
         score -= 1
 
-    # -----------------------------------------------------
+    # -------------------------
     # STRUCTURE
-    # -----------------------------------------------------
+    # -------------------------
 
     if structure == "BULLISH":
 
@@ -820,15 +804,11 @@ def generate_signal(
             "Bearish market structure"
         )
 
-    # -----------------------------------------------------
+    # -------------------------
     # RSI
-    # -----------------------------------------------------
+    # -------------------------
 
-    if (
-        50 <
-        rsi <
-        68
-    ):
+    if 50 < rsi < 68:
 
         score += 1
 
@@ -836,38 +816,33 @@ def generate_signal(
             "Healthy bullish RSI"
         )
 
-    elif (
-        32 <
-        rsi <
-        50
-    ):
+    elif 32 < rsi < 50:
 
         score -= 1
 
         reasons.append(
-            "Bearish RSI momentum"
+            "Bearish RSI"
         )
 
-    # Avoid buying extreme overbought
-    if rsi >= 75:
+    elif rsi >= 75:
 
         score -= 2
 
         reasons.append(
-            "Extreme RSI overbought"
+            "Extreme overbought"
         )
 
-    if rsi <= 25:
+    elif rsi <= 25:
 
         score += 2
 
         reasons.append(
-            "Extreme RSI oversold"
+            "Extreme oversold"
         )
 
-    # -----------------------------------------------------
+    # -------------------------
     # MACD
-    # -----------------------------------------------------
+    # -------------------------
 
     if (
         last["MACD"] >
@@ -888,15 +863,11 @@ def generate_signal(
             "MACD bearish"
         )
 
-    # -----------------------------------------------------
+    # -------------------------
     # MOMENTUM
-    # -----------------------------------------------------
+    # -------------------------
 
-    if (
-        mom5 > 0
-        and
-        mom15 > 0
-    ):
+    if mom5 > 0 and mom15 > 0:
 
         score += 1
 
@@ -904,11 +875,7 @@ def generate_signal(
             "Positive momentum"
         )
 
-    elif (
-        mom5 < 0
-        and
-        mom15 < 0
-    ):
+    elif mom5 < 0 and mom15 < 0:
 
         score -= 1
 
@@ -916,11 +883,11 @@ def generate_signal(
             "Negative momentum"
         )
 
-    # -----------------------------------------------------
+    # -------------------------
     # VOLUME
-    # -----------------------------------------------------
+    # -------------------------
 
-    if volume_ratio >= 1.2:
+    if volume >= 1.2:
 
         if score > 0:
 
@@ -934,9 +901,9 @@ def generate_signal(
             "Volume confirmation"
         )
 
-    # -----------------------------------------------------
+    # -------------------------
     # CANDLE
-    # -----------------------------------------------------
+    # -------------------------
 
     if candle in [
         "BULLISH_REJECTION",
@@ -960,16 +927,16 @@ def generate_signal(
             "Bearish candle confirmation"
         )
 
-    # -----------------------------------------------------
+    # -------------------------
     # MTF
-    # -----------------------------------------------------
+    # -------------------------
 
     if mtf["confirmation"] == "BULLISH":
 
         score += 2
 
         reasons.append(
-            "Multi-timeframe bullish confirmation"
+            "Higher timeframe bullish"
         )
 
     elif mtf["confirmation"] == "BEARISH":
@@ -977,16 +944,17 @@ def generate_signal(
         score -= 2
 
         reasons.append(
-            "Multi-timeframe bearish confirmation"
+            "Higher timeframe bearish"
         )
 
-    # -----------------------------------------------------
-    # LIQUIDITY SWEEP
-    # -----------------------------------------------------
+    # -------------------------
+    # LIQUIDITY
+    # -------------------------
 
     if (
-        liquidity["sweep"] ==
-        "BULLISH_LIQUIDITY_SWEEP"
+        liquidity["sweep"]
+        ==
+        "BULLISH_SWEEP"
     ):
 
         score += 2
@@ -996,8 +964,9 @@ def generate_signal(
         )
 
     elif (
-        liquidity["sweep"] ==
-        "BEARISH_LIQUIDITY_SWEEP"
+        liquidity["sweep"]
+        ==
+        "BEARISH_SWEEP"
     ):
 
         score -= 2
@@ -1006,15 +975,15 @@ def generate_signal(
             "Bearish liquidity sweep"
         )
 
-    # -----------------------------------------------------
-    # FINAL DIRECTION
-    # -----------------------------------------------------
+    # -------------------------
+    # DIRECTION
+    # -------------------------
 
-    if score >= 7:
+    if score >= SIGNAL_THRESHOLD:
 
         direction = "LONG"
 
-    elif score <= -7:
+    elif score <= -SIGNAL_THRESHOLD:
 
         direction = "SHORT"
 
@@ -1022,8 +991,7 @@ def generate_signal(
 
         direction = "NO_TRADE"
 
-    # Strong conflict filter
-
+    # Higher timeframe conflict
     if (
         direction == "LONG"
         and
@@ -1034,7 +1002,7 @@ def generate_signal(
         direction = "NO_TRADE"
 
         reasons.append(
-            "Long rejected by higher timeframe"
+            "LONG rejected by higher timeframe"
         )
 
     if (
@@ -1047,25 +1015,25 @@ def generate_signal(
         direction = "NO_TRADE"
 
         reasons.append(
-            "Short rejected by higher timeframe"
+            "SHORT rejected by higher timeframe"
         )
 
-    # High trap risk filter
-
+    # Trap filter
     if (
-        liquidity["trap_risk"] ==
+        liquidity["trap_risk"]
+        ==
         "HIGH"
     ):
 
         direction = "NO_TRADE"
 
         reasons.append(
-            "Trade rejected because trap risk is high"
+            "Trade rejected due to high trap risk"
         )
 
-    # -----------------------------------------------------
-    # ENTRY / SL / TP
-    # -----------------------------------------------------
+    # -------------------------
+    # ENTRY SL TP
+    # -------------------------
 
     entry = price
 
@@ -1081,17 +1049,14 @@ def generate_signal(
 
     if direction == "LONG":
 
-        structural_sl = levels[
-            "support"
-        ]
-
         atr_sl = (
             entry -
-            atr * 1.5
+            atr *
+            SL_ATR_MULTIPLIER
         )
 
         stop_loss = min(
-            structural_sl,
+            levels["support"],
             atr_sl
         )
 
@@ -1104,34 +1069,34 @@ def generate_signal(
 
             tp1 = (
                 entry +
-                risk * 1.5
+                risk *
+                TP1_RR
             )
 
             tp2 = (
                 entry +
-                risk * 2
+                risk *
+                TP2_RR
             )
 
             tp3 = (
                 entry +
-                risk * 3
+                risk *
+                TP3_RR
             )
 
-            risk_reward = 1.5
+            risk_reward = TP1_RR
 
     elif direction == "SHORT":
 
-        structural_sl = levels[
-            "resistance"
-        ]
-
         atr_sl = (
             entry +
-            atr * 1.5
+            atr *
+            SL_ATR_MULTIPLIER
         )
 
         stop_loss = max(
-            structural_sl,
+            levels["resistance"],
             atr_sl
         )
 
@@ -1144,24 +1109,27 @@ def generate_signal(
 
             tp1 = (
                 entry -
-                risk * 1.5
+                risk *
+                TP1_RR
             )
 
             tp2 = (
                 entry -
-                risk * 2
+                risk *
+                TP2_RR
             )
 
             tp3 = (
                 entry -
-                risk * 3
+                risk *
+                TP3_RR
             )
 
-            risk_reward = 1.5
+            risk_reward = TP1_RR
 
-    # -----------------------------------------------------
+    # -------------------------
     # MONEY MANAGEMENT
-    # -----------------------------------------------------
+    # -------------------------
 
     if stop_loss is not None:
 
@@ -1171,15 +1139,15 @@ def generate_signal(
             100
         )
 
-        stop_distance = abs(
+        distance = abs(
             entry -
             stop_loss
         )
 
         position_size = (
             risk_amount /
-            stop_distance
-            if stop_distance > 0
+            distance
+            if distance > 0
             else 0
         )
 
@@ -1196,14 +1164,37 @@ def generate_signal(
 
         position_value = 0
 
-    # -----------------------------------------------------
-    # CONFIDENCE
-    # -----------------------------------------------------
+    # -------------------------
+    # SIGNAL NAME
+    # -------------------------
+
+    if direction == "LONG":
+
+        signal = (
+            "STRONG BUY"
+            if score >= 10
+            else
+            "BUY"
+        )
+
+    elif direction == "SHORT":
+
+        signal = (
+            "STRONG SELL"
+            if score <= -10
+            else
+            "SELL"
+        )
+
+    else:
+
+        signal = "NO TRADE"
 
     confidence = min(
         95,
         50 +
-        abs(score) * 4
+        abs(score) *
+        4
     )
 
     if direction == "NO_TRADE":
@@ -1212,26 +1203,6 @@ def generate_signal(
             confidence,
             55
         )
-
-    if direction == "LONG":
-
-        signal = (
-            "STRONG BUY"
-            if score >= 10
-            else "BUY"
-        )
-
-    elif direction == "SHORT":
-
-        signal = (
-            "STRONG SELL"
-            if score <= -10
-            else "SELL"
-        )
-
-    else:
-
-        signal = "NO TRADE"
 
     return {
 
@@ -1256,7 +1227,7 @@ def generate_signal(
         "score":
             score,
 
-        "price":
+        "current_price":
             round(
                 price,
                 8
@@ -1326,17 +1297,13 @@ def generate_signal(
 
         "support":
             round(
-                levels[
-                    "support"
-                ],
+                levels["support"],
                 8
             ),
 
         "resistance":
             round(
-                levels[
-                    "resistance"
-                ],
+                levels["resistance"],
                 8
             ),
 
@@ -1354,7 +1321,7 @@ def generate_signal(
 
         "volume_ratio":
             round(
-                volume_ratio,
+                volume,
                 3
             ),
 
@@ -1403,7 +1370,407 @@ def generate_signal(
 
 
 # =========================================================
-# LIVE ANALYSIS API
+# BACKTEST ENGINE
+# =========================================================
+
+def backtest_strategy(
+    df,
+    symbol,
+    fee_percent=0.1,
+    slippage_percent=0.02
+):
+
+    df = add_indicators(
+        df
+    )
+
+    trades = []
+
+    wins = 0
+
+    losses = 0
+
+    skipped = 0
+
+    start = 220
+
+    # We use historical candles only.
+    # No future data is used to create the signal.
+
+    for i in range(
+        start,
+        len(df) - 20
+    ):
+
+        historical = (
+            df.iloc[
+                :i + 1
+            ]
+            .copy()
+        )
+
+        last = historical.iloc[-1]
+
+        # Simple historical signal
+        # using current historical information
+
+        trend = get_trend(
+            historical
+        )
+
+        structure = market_structure(
+            historical
+        )
+
+        rsi = safe_float(
+            last["RSI"],
+            50
+        )
+
+        macd_bull = (
+            last["MACD"] >
+            last["MACD_SIGNAL"]
+        )
+
+        mom5 = safe_float(
+            last["MOM_5"]
+        )
+
+        mom15 = safe_float(
+            last["MOM_15"]
+        )
+
+        score = 0
+
+        if trend == "STRONG_BULLISH":
+            score += 3
+
+        elif trend == "STRONG_BEARISH":
+            score -= 3
+
+        elif trend == "BULLISH":
+            score += 1
+
+        elif trend == "BEARISH":
+            score -= 1
+
+        if structure == "BULLISH":
+            score += 2
+
+        elif structure == "BEARISH":
+            score -= 2
+
+        if 50 < rsi < 68:
+            score += 1
+
+        elif 32 < rsi < 50:
+            score -= 1
+
+        if rsi >= 75:
+            score -= 2
+
+        elif rsi <= 25:
+            score += 2
+
+        if macd_bull:
+            score += 2
+
+        else:
+            score -= 2
+
+        if mom5 > 0 and mom15 > 0:
+            score += 1
+
+        elif mom5 < 0 and mom15 < 0:
+            score -= 1
+
+        if score >= SIGNAL_THRESHOLD:
+
+            direction = "LONG"
+
+        elif score <= -SIGNAL_THRESHOLD:
+
+            direction = "SHORT"
+
+        else:
+
+            skipped += 1
+
+            continue
+
+        entry = safe_float(
+            df.iloc[i]["close"]
+        )
+
+        atr = safe_float(
+            df.iloc[i]["ATR"]
+        )
+
+        if atr <= 0:
+
+            continue
+
+        if direction == "LONG":
+
+            sl = (
+                entry -
+                atr *
+                SL_ATR_MULTIPLIER
+            )
+
+            tp = (
+                entry +
+                (
+                    entry -
+                    sl
+                ) *
+                TP1_RR
+            )
+
+        else:
+
+            sl = (
+                entry +
+                atr *
+                SL_ATR_MULTIPLIER
+            )
+
+            tp = (
+                entry -
+                (
+                    sl -
+                    entry
+                ) *
+                TP1_RR
+            )
+
+        result = "OPEN"
+
+        exit_price = None
+
+        exit_index = None
+
+        # Check future candles
+        for j in range(
+            i + 1,
+            min(
+                i + 21,
+                len(df)
+            )
+        ):
+
+            high = safe_float(
+                df.iloc[j]["high"]
+            )
+
+            low = safe_float(
+                df.iloc[j]["low"]
+            )
+
+            if direction == "LONG":
+
+                hit_sl = (
+                    low <= sl
+                )
+
+                hit_tp = (
+                    high >= tp
+                )
+
+                # Conservative rule:
+                # if both hit same candle,
+                # count SL first.
+
+                if hit_sl:
+
+                    result = "LOSS"
+
+                    exit_price = sl
+
+                    exit_index = j
+
+                    break
+
+                if hit_tp:
+
+                    result = "WIN"
+
+                    exit_price = tp
+
+                    exit_index = j
+
+                    break
+
+            else:
+
+                hit_sl = (
+                    high >= sl
+                )
+
+                hit_tp = (
+                    low <= tp
+                )
+
+                if hit_sl:
+
+                    result = "LOSS"
+
+                    exit_price = sl
+
+                    exit_index = j
+
+                    break
+
+                if hit_tp:
+
+                    result = "WIN"
+
+                    exit_price = tp
+
+                    exit_index = j
+
+                    break
+
+        if result == "OPEN":
+
+            continue
+
+        # Approximate trading costs
+        gross_return = abs(
+            exit_price -
+            entry
+        ) / entry * 100
+
+        total_cost = (
+            fee_percent * 2
+            +
+            slippage_percent
+        )
+
+        if result == "WIN":
+
+            net_return = (
+                gross_return -
+                total_cost
+            )
+
+            wins += 1
+
+        else:
+
+            net_return = (
+                -gross_return -
+                total_cost
+            )
+
+            losses += 1
+
+        trades.append(
+            {
+                "direction":
+                    direction,
+
+                "entry":
+                    round(
+                        entry,
+                        8
+                    ),
+
+                "exit":
+                    round(
+                        exit_price,
+                        8
+                    ),
+
+                "result":
+                    result,
+
+                "net_return_percent":
+                    round(
+                        net_return,
+                        4
+                    )
+            }
+        )
+
+    total = wins + losses
+
+    if total > 0:
+
+        win_rate = (
+            wins /
+            total
+        ) * 100
+
+    else:
+
+        win_rate = 0
+
+    net_profit = sum(
+        t[
+            "net_return_percent"
+        ]
+        for t in trades
+    )
+
+    return {
+
+        "status":
+            "success",
+
+        "symbol":
+            symbol,
+
+        "candles_tested":
+            len(df) - start,
+
+        "total_trades":
+            total,
+
+        "wins":
+            wins,
+
+        "losses":
+            losses,
+
+        "skipped_no_trade":
+            skipped,
+
+        "win_rate_percent":
+            round(
+                win_rate,
+                2
+            ),
+
+        "net_return_percent":
+            round(
+                net_profit,
+                4
+            ),
+
+        "fee_percent_per_side":
+            fee_percent,
+
+        "slippage_percent":
+            slippage_percent,
+
+        "note":
+            (
+                "Backtest checks whether "
+                "TP1 or SL was reached "
+                "within the next 20 candles. "
+                "If both TP and SL occur in "
+                "the same candle, SL is counted "
+                "first as a conservative assumption."
+            ),
+
+        "recent_trades":
+            trades[-20:]
+    }
+
+
+# =========================================================
+# HOME
 # =========================================================
 
 @app.route("/")
@@ -1415,19 +1782,49 @@ def home():
             "success",
 
         "bot":
-            "GM AI Trading Analysis Bot",
+            "GM AI Trading Bot",
 
         "version":
-            "FINAL V1",
+            "Professional V2",
 
         "message":
-            "Bot is running",
+            "Trading analysis bot is running.",
 
-        "example":
-            "/analysis/BTCUSDT"
+        "endpoints":
+            [
+                "/health",
+                "/analysis/BTCUSDT",
+                "/backtest/BTCUSDT"
+            ]
 
     })
 
+
+# =========================================================
+# HEALTH
+# =========================================================
+
+@app.route(
+    "/health"
+)
+def health():
+
+    return jsonify({
+
+        "status":
+            "healthy",
+
+        "timestamp":
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+
+    })
+
+
+# =========================================================
+# LIVE ANALYSIS
+# =========================================================
 
 @app.route(
     "/analysis/<symbol>"
@@ -1454,7 +1851,6 @@ def analysis(symbol):
             )
         )
 
-        # Main chart
         df = get_data(
             symbol,
             "5m",
@@ -1465,12 +1861,11 @@ def analysis(symbol):
             df
         )
 
-        # Multi timeframe
-        mtf = multi_timeframe_analysis(
+        mtf = get_mtf(
             symbol
         )
 
-        result = generate_signal(
+        result = analyze_market(
             df,
             symbol,
             mtf,
@@ -1488,8 +1883,9 @@ def analysis(symbol):
             "warning"
         ] = (
             "Technical analysis only. "
-            "No guaranteed prediction or "
-            "guaranteed win rate."
+            "No guaranteed profit or "
+            "win rate. Test with paper "
+            "trading before risking money."
         )
 
         return jsonify(
@@ -1515,29 +1911,84 @@ def analysis(symbol):
 
 
 # =========================================================
-# SIMPLE HEALTH CHECK
+# BACKTEST
 # =========================================================
 
 @app.route(
-    "/health"
+    "/backtest/<symbol>"
 )
-def health():
+def backtest(symbol):
 
-    return jsonify({
+    try:
 
-        "status":
-            "healthy",
+        symbol = normalize_symbol(
+            symbol
+        )
 
-        "time":
-            datetime.now(
-                timezone.utc
-            ).isoformat()
+        limit = int(
+            request.args.get(
+                "limit",
+                1000
+            )
+        )
 
-    })
+        fee = float(
+            request.args.get(
+                "fee",
+                0.1
+            )
+        )
+
+        slippage = float(
+            request.args.get(
+                "slippage",
+                0.02
+            )
+        )
+
+        df = get_data(
+            symbol,
+            "5m",
+            limit
+        )
+
+        result = backtest_strategy(
+            df,
+            symbol,
+            fee,
+            slippage
+        )
+
+        result[
+            "timestamp"
+        ] = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        return jsonify(
+            result
+        )
+
+    except Exception as e:
+
+        return jsonify({
+
+            "status":
+                "error",
+
+            "symbol":
+                normalize_symbol(
+                    symbol
+                ),
+
+            "message":
+                str(e)
+
+        }), 400
 
 
 # =========================================================
-# RUN
+# SERVER
 # =========================================================
 
 if __name__ == "__main__":
