@@ -8,57 +8,68 @@ from datetime import datetime, timezone
 app = Flask(__name__)
 
 # =========================================================
-# GM SMART SCALPER V3
-# VIDEO-INSPIRED SYSTEM
+# GM SMART SCALPER V4
+# MEXC FUTURES + TECHNICAL + ORDER FLOW
+#
+# ANALYSIS ONLY
+# NO REAL ORDER EXECUTION
 #
 # FLOW:
-# MARKET BIAS
-# -> KEY LEVEL
-# -> LIQUIDITY SWEEP / BREAKOUT
-# -> RETEST
-# -> VOLUME CONFIRMATION
-# -> ENTRY
-# -> SL
-# -> TP1 / TP2 / TP3
-#
-# MEXC SPOT KLINE DATA
+# HTF CONTEXT
+# -> MARKET BIAS
+# -> MARKET STRUCTURE / BOS
+# -> KEY LEVELS
+# -> LIQUIDITY SWEEP
+# -> BREAKOUT / RETEST
+# -> ORDER BOOK
+# -> BUYER / SELLER PRESSURE
+# -> EXECUTED TRADE FLOW
+# -> DELTA
+# -> AGGRESSION
+# -> ABSORPTION / FAKE MOVE FILTER
+# -> RISK / R:R
+# -> FINAL SIGNAL
 # =========================================================
 
-MEXC_BASE = "https://api.mexc.com"
+MEXC_BASE = "https://contract.mexc.com"
 
-DEFAULT_SYMBOL = "BTCUSDT"
-DEFAULT_INTERVAL = "5m"
-DEFAULT_LIMIT = 1000
+DEFAULT_SYMBOL = "BTC_USDT"
+DEFAULT_INTERVAL = "Min5"
 
 MIN_CANDLES = 250
 
-# Signal quality
-MIN_SCORE = 8
+MIN_SCORE = 10
 
-# Risk management
 SL_ATR = 1.5
+
 TP1_RR = 1.5
 TP2_RR = 2.5
 TP3_RR = 3.5
 
-# Backtest
 MAX_HOLD_CANDLES = 20
+
+ORDERBOOK_LEVELS = 20
 
 
 # =========================================================
-# BASIC HELPERS
+# HELPERS
 # =========================================================
 
 def normalize_symbol(symbol):
 
-    return (
+    symbol = (
         str(symbol)
         .upper()
         .strip()
-        .replace("/", "")
-        .replace("-", "")
-        .replace("_", "")
+        .replace("/", "_")
+        .replace("-", "_")
     )
+
+    if symbol.endswith("USDT") and "_" not in symbol:
+
+        symbol = symbol[:-4] + "_USDT"
+
+    return symbol
 
 
 def safe_float(value, default=0.0):
@@ -73,51 +84,31 @@ def safe_float(value, default=0.0):
 
         return value
 
-    except:
+    except Exception:
 
         return default
 
 
+def utc_now():
+
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
 # =========================================================
-# MEXC MARKET DATA
+# MEXC FUTURES REQUEST
 # =========================================================
 
-def get_data(
-    symbol,
-    interval="5m",
-    limit=1000
+def mexc_get(
+    path,
+    params=None
 ):
 
-    symbol = normalize_symbol(symbol)
-
-    try:
-
-        limit = int(limit)
-
-    except:
-
-        limit = 1000
-
-    limit = max(
-        MIN_CANDLES,
-        min(limit, 1000)
-    )
-
     url = (
-        f"{MEXC_BASE}/api/v3/klines"
+        MEXC_BASE +
+        path
     )
-
-    params = {
-
-        "symbol":
-            symbol,
-
-        "interval":
-            interval,
-
-        "limit":
-            limit
-    }
 
     response = requests.get(
 
@@ -132,68 +123,297 @@ def get_data(
 
         raise Exception(
 
-            f"MEXC API error "
+            f"MEXC HTTP error "
             f"{response.status_code}: "
             f"{response.text[:500]}"
         )
 
     data = response.json()
 
-    if not isinstance(data, list):
+    if not data.get(
+        "success",
+        False
+    ):
 
         raise Exception(
 
-            f"Unexpected MEXC response: "
+            f"MEXC API error: "
             f"{data}"
         )
 
-    rows = []
+    return data.get(
+        "data"
+    )
 
-    for candle in data:
 
-        if len(candle) < 6:
+# =========================================================
+# CONTRACT INFO
+# =========================================================
 
-            continue
+def get_contract_info(symbol):
 
-        rows.append(
+    symbol = normalize_symbol(
+        symbol
+    )
 
-            [
+    data = mexc_get(
 
-                candle[0],
+        "/api/v1/contract/detail",
 
-                candle[1],
+        {
+            "symbol":
+                symbol
+        }
 
-                candle[2],
+    )
 
-                candle[3],
+    if isinstance(
+        data,
+        list
+    ):
 
-                candle[4],
+        if len(data) == 0:
 
-                candle[5]
+            raise Exception(
+                "Contract not found"
+            )
 
-            ]
+        return data[0]
+
+    return data
+
+
+# =========================================================
+# KLINE DATA
+# =========================================================
+
+def interval_to_minutes(interval):
+
+    mapping = {
+
+        "1m": 1,
+        "5m": 5,
+        "15m": 15,
+        "30m": 30,
+        "1h": 60,
+        "4h": 240,
+
+        "Min1": 1,
+        "Min5": 5,
+        "Min15": 15,
+        "Min30": 30,
+
+        "Min60": 60,
+        "Hour1": 60,
+
+        "Hour4": 240
+    }
+
+    return mapping.get(
+        interval,
+        5
+    )
+
+
+def normalize_interval(interval):
+
+    mapping = {
+
+        "1m": "Min1",
+        "5m": "Min5",
+        "15m": "Min15",
+        "30m": "Min30",
+
+        "1h": "Min60",
+        "60m": "Min60",
+
+        "4h": "Hour4"
+    }
+
+    return mapping.get(
+
+        interval,
+
+        interval
+    )
+
+
+def get_data(
+
+    symbol,
+
+    interval="5m",
+
+    limit=1000
+
+):
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    interval = normalize_interval(
+        interval
+    )
+
+    minutes = interval_to_minutes(
+        interval
+    )
+
+    try:
+
+        limit = int(
+            limit
         )
 
-    df = pd.DataFrame(
+    except:
 
-        rows,
+        limit = 1000
 
-        columns=[
+    limit = max(
 
-            "time",
+        MIN_CANDLES,
 
-            "open",
-
-            "high",
-
-            "low",
-
-            "close",
-
-            "volume"
-
-        ]
+        min(
+            limit,
+            1000
+        )
     )
+
+    # Request enough historical time
+    # for approximately "limit" candles.
+
+    end = int(
+
+        datetime.now(
+            timezone.utc
+        ).timestamp()
+    )
+
+    start = (
+
+        end -
+
+        (
+            limit *
+
+            minutes *
+
+            60
+        )
+    )
+
+    data = mexc_get(
+
+        f"/api/v1/contract/kline/{symbol}",
+
+        {
+
+            "interval":
+                interval,
+
+            "start":
+                start,
+
+            "end":
+                end
+
+        }
+
+    )
+
+    if not isinstance(
+        data,
+        dict
+    ):
+
+        raise Exception(
+            "Unexpected Kline response"
+        )
+
+    times = data.get(
+        "time",
+        []
+    )
+
+    opens = data.get(
+        "open",
+        []
+    )
+
+    highs = data.get(
+        "high",
+        []
+    )
+
+    lows = data.get(
+        "low",
+        []
+    )
+
+    closes = data.get(
+        "close",
+        []
+    )
+
+    volumes = data.get(
+        "vol",
+        []
+    )
+
+    if not volumes:
+
+        volumes = data.get(
+            "volume",
+            []
+        )
+
+    n = min(
+
+        len(times),
+
+        len(opens),
+
+        len(highs),
+
+        len(lows),
+
+        len(closes),
+
+        len(volumes)
+
+    )
+
+    if n < MIN_CANDLES:
+
+        raise Exception(
+
+            f"Not enough candles. "
+            f"Received {n}, "
+            f"required {MIN_CANDLES}"
+        )
+
+    df = pd.DataFrame({
+
+        "time":
+            times[:n],
+
+        "open":
+            opens[:n],
+
+        "high":
+            highs[:n],
+
+        "low":
+            lows[:n],
+
+        "close":
+            closes[:n],
+
+        "volume":
+            volumes[:n]
+
+    })
 
     for col in [
 
@@ -222,16 +442,19 @@ def get_data(
 
         .dropna()
 
-        .reset_index(drop=True)
-    )
-
-    if len(df) < MIN_CANDLES:
-
-        raise Exception(
-
-            "Not enough candles "
-            "returned by MEXC"
+        .sort_values(
+            "time"
         )
+
+        .drop_duplicates(
+            "time"
+        )
+
+        .reset_index(
+            drop=True
+        )
+
+    )
 
     return df
 
@@ -244,9 +467,7 @@ def add_indicators(df):
 
     df = df.copy()
 
-    # -----------------------------------------------------
     # EMA
-    # -----------------------------------------------------
 
     df["EMA20"] = (
 
@@ -293,11 +514,11 @@ def add_indicators(df):
         .mean()
     )
 
-    # -----------------------------------------------------
     # RSI
-    # -----------------------------------------------------
 
-    delta = df["close"].diff()
+    delta = df[
+        "close"
+    ].diff()
 
     gain = delta.clip(
         lower=0
@@ -357,14 +578,17 @@ def add_indicators(df):
 
             100 /
 
-            (1 + rs)
+            (
+                1 +
+
+                rs
+            )
 
         )
+
     )
 
-    # -----------------------------------------------------
     # MACD
-    # -----------------------------------------------------
 
     ema12 = (
 
@@ -425,9 +649,7 @@ def add_indicators(df):
         df["MACD_SIGNAL"]
     )
 
-    # -----------------------------------------------------
     # ATR
-    # -----------------------------------------------------
 
     high_low = (
 
@@ -466,7 +688,9 @@ def add_indicators(df):
 
         axis=1
 
-    ).max(axis=1)
+    ).max(
+        axis=1
+    )
 
     df["ATR"] = (
 
@@ -483,15 +707,15 @@ def add_indicators(df):
         .mean()
     )
 
-    # -----------------------------------------------------
-    # VOLUME
-    # -----------------------------------------------------
+    # Volume
 
     df["VOL_AVG"] = (
 
         df["volume"]
 
-        .rolling(20)
+        .rolling(
+            20
+        )
 
         .mean()
     )
@@ -508,15 +732,15 @@ def add_indicators(df):
         )
     )
 
-    # -----------------------------------------------------
-    # MOMENTUM
-    # -----------------------------------------------------
+    # Momentum
 
     df["MOM_5"] = (
 
         df["close"]
 
-        .pct_change(5)
+        .pct_change(
+            5
+        )
 
         * 100
     )
@@ -525,14 +749,14 @@ def add_indicators(df):
 
         df["close"]
 
-        .pct_change(15)
+        .pct_change(
+            15
+        )
 
         * 100
     )
 
-    # -----------------------------------------------------
-    # CANDLE STRUCTURE
-    # -----------------------------------------------------
+    # Candle structure
 
     df["BODY"] = (
 
@@ -554,19 +778,25 @@ def add_indicators(df):
         df["high"] -
 
         df[
-
-            ["open", "close"]
-
-        ].max(axis=1)
+            [
+                "open",
+                "close"
+            ]
+        ].max(
+            axis=1
+        )
     )
 
     df["LOWER_WICK"] = (
 
         df[
-
-            ["open", "close"]
-
-        ].min(axis=1)
+            [
+                "open",
+                "close"
+            ]
+        ].min(
+            axis=1
+        )
 
         -
 
@@ -642,10 +872,14 @@ def get_market_bias(df):
 
         score -= 1
 
-    if safe_float(
+    if (
+
         last["MACD"]
-    ) > safe_float(
+
+        >
+
         last["MACD_SIGNAL"]
+
     ):
 
         score += 1
@@ -654,15 +888,31 @@ def get_market_bias(df):
 
         score -= 1
 
-    if safe_float(
-        last["MOM_15"]
-    ) > 0:
+    if (
+
+        safe_float(
+            last["MOM_15"]
+        )
+
+        >
+
+        0
+
+    ):
 
         score += 1
 
-    elif safe_float(
-        last["MOM_15"]
-    ) < 0:
+    elif (
+
+        safe_float(
+            last["MOM_15"]
+        )
+
+        <
+
+        0
+
+    ):
 
         score -= 1
 
@@ -689,24 +939,38 @@ def get_market_bias(df):
 
 
 # =========================================================
-# MARKET STRUCTURE
+# MARKET STRUCTURE + BOS
 # =========================================================
 
 def get_market_structure(df):
 
-    data = df.tail(60)
+    data = df.tail(
+        60
+    )
 
-    first = data.iloc[:30]
+    first = data.iloc[
+        :30
+    ]
 
-    second = data.iloc[30:]
+    second = data.iloc[
+        30:
+    ]
 
-    first_high = first["high"].max()
+    first_high = first[
+        "high"
+    ].max()
 
-    second_high = second["high"].max()
+    second_high = second[
+        "high"
+    ].max()
 
-    first_low = first["low"].min()
+    first_low = first[
+        "low"
+    ].min()
 
-    second_low = second["low"].min()
+    second_low = second[
+        "low"
+    ].min()
 
     if (
 
@@ -735,41 +999,92 @@ def get_market_structure(df):
     return "SIDEWAYS"
 
 
+def detect_bos(df):
+
+    if len(df) < 25:
+
+        return "NONE"
+
+    previous = df.iloc[
+        -21:-1
+    ]
+
+    last = df.iloc[
+        -1
+    ]
+
+    swing_high = previous[
+        "high"
+    ].max()
+
+    swing_low = previous[
+        "low"
+    ].min()
+
+    if (
+
+        last["close"]
+
+        >
+
+        swing_high
+
+    ):
+
+        return "BULLISH_BOS"
+
+    if (
+
+        last["close"]
+
+        <
+
+        swing_low
+
+    ):
+
+        return "BEARISH_BOS"
+
+    return "NONE"
+
+
 # =========================================================
 # KEY LEVELS
 # =========================================================
 
 def get_key_levels(df):
 
-    # IMPORTANT:
-    # Exclude current candle.
-    # This prevents using current candle's future
-    # information in historical backtesting.
-
     history = (
 
-        df.iloc[:-1]
+        df.iloc[
+            :-1
+        ]
 
-        .tail(100)
-    )
-
-    support = safe_float(
-
-        history["low"].min()
-    )
-
-    resistance = safe_float(
-
-        history["high"].max()
+        .tail(
+            100
+        )
     )
 
     return {
 
         "support":
-            support,
+            safe_float(
+
+                history[
+                    "low"
+                ].min()
+
+            ),
 
         "resistance":
-            resistance
+            safe_float(
+
+                history[
+                    "high"
+                ].max()
+
+            )
+
     }
 
 
@@ -778,11 +1093,16 @@ def get_key_levels(df):
 # =========================================================
 
 def detect_liquidity_sweep(
+
     df,
+
     levels
+
 ):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
     support = levels[
         "support"
@@ -792,7 +1112,7 @@ def detect_liquidity_sweep(
         "resistance"
     ]
 
-    bullish_sweep = (
+    bullish = (
 
         last["low"]
 
@@ -815,9 +1135,10 @@ def detect_liquidity_sweep(
         >
 
         last["open"]
+
     )
 
-    bearish_sweep = (
+    bearish = (
 
         last["high"]
 
@@ -840,13 +1161,14 @@ def detect_liquidity_sweep(
         <
 
         last["open"]
+
     )
 
-    if bullish_sweep:
+    if bullish:
 
         return "BULLISH_SWEEP"
 
-    if bearish_sweep:
+    if bearish:
 
         return "BEARISH_SWEEP"
 
@@ -854,15 +1176,20 @@ def detect_liquidity_sweep(
 
 
 # =========================================================
-# BREAKOUT DETECTION
+# BREAKOUT
 # =========================================================
 
 def detect_breakout(
+
     df,
+
     levels
+
 ):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
     support = levels[
         "support"
@@ -872,7 +1199,7 @@ def detect_breakout(
         "resistance"
     ]
 
-    bullish_breakout = (
+    if (
 
         last["close"]
 
@@ -887,9 +1214,12 @@ def detect_breakout(
         <=
 
         resistance
-    )
 
-    bearish_breakdown = (
+    ):
+
+        return "BULLISH_BREAKOUT"
+
+    if (
 
         last["close"]
 
@@ -904,13 +1234,8 @@ def detect_breakout(
         >=
 
         support
-    )
 
-    if bullish_breakout:
-
-        return "BULLISH_BREAKOUT"
-
-    if bearish_breakdown:
+    ):
 
         return "BEARISH_BREAKDOWN"
 
@@ -918,21 +1243,28 @@ def detect_breakout(
 
 
 # =========================================================
-# RETEST CONFIRMATION
+# RETEST
 # =========================================================
 
 def detect_retest(
+
     df,
+
     levels
+
 ):
 
     if len(df) < 4:
 
         return "NONE"
 
-    current = df.iloc[-1]
+    current = df.iloc[
+        -1
+    ]
 
-    previous = df.iloc[-2]
+    previous = df.iloc[
+        -2
+    ]
 
     support = levels[
         "support"
@@ -942,8 +1274,7 @@ def detect_retest(
         "resistance"
     ]
 
-    # Bullish reclaim/retest
-    bullish_retest = (
+    bullish = (
 
         previous["close"]
 
@@ -966,10 +1297,10 @@ def detect_retest(
         >
 
         resistance
+
     )
 
-    # Bearish retest
-    bearish_retest = (
+    bearish = (
 
         previous["close"]
 
@@ -992,59 +1323,18 @@ def detect_retest(
         <
 
         support
+
     )
 
-    if bullish_retest:
+    if bullish:
 
         return "BULLISH_RETEST"
 
-    if bearish_retest:
+    if bearish:
 
         return "BEARISH_RETEST"
 
     return "NONE"
-
-
-# =========================================================
-# VOLUME CONFIRMATION
-# =========================================================
-
-def volume_confirmation(df):
-
-    last = df.iloc[-1]
-
-    volume_ratio = safe_float(
-
-        last["VOLUME_RATIO"],
-
-        1
-    )
-
-    if volume_ratio >= 1.2:
-
-        return {
-
-            "confirmed":
-                True,
-
-            "ratio":
-                round(
-                    volume_ratio,
-                    3
-                )
-        }
-
-    return {
-
-        "confirmed":
-            False,
-
-        "ratio":
-            round(
-                volume_ratio,
-                3
-            )
-    }
 
 
 # =========================================================
@@ -1053,7 +1343,9 @@ def volume_confirmation(df):
 
 def candle_confirmation(df):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
     body = safe_float(
         last["BODY"]
@@ -1151,14 +1443,14 @@ def candle_confirmation(df):
 
 
 # =========================================================
-# HIGHER TIMEFRAME CONFIRMATION
+# MTF
 # =========================================================
 
-def timeframe_bias(
-    df
-):
+def timeframe_bias(df):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
     if (
 
@@ -1195,18 +1487,13 @@ def timeframe_bias(
     return "NEUTRAL"
 
 
-def get_mtf_confirmation(
-    symbol
-):
+def get_mtf_confirmation(symbol):
 
     intervals = [
 
         "5m",
-
         "15m",
-
         "1h",
-
         "4h"
 
     ]
@@ -1236,7 +1523,7 @@ def get_mtf_confirmation(
                 data
             )
 
-        except Exception:
+        except Exception as e:
 
             results[
                 interval
@@ -1247,7 +1534,6 @@ def get_mtf_confirmation(
         results.values()
 
     ).count(
-
         "BULLISH"
     )
 
@@ -1256,7 +1542,6 @@ def get_mtf_confirmation(
         results.values()
 
     ).count(
-
         "BEARISH"
     )
 
@@ -1289,22 +1574,720 @@ def get_mtf_confirmation(
 
 
 # =========================================================
-# SIGNAL ENGINE
+# ORDER BOOK
+# =========================================================
+
+def get_orderbook(
+
+    symbol,
+
+    levels=20
+
+):
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    data = mexc_get(
+
+        f"/api/v1/contract/depth/{symbol}",
+
+        {
+
+            "limit":
+                levels
+
+        }
+
+    )
+
+    if not isinstance(
+        data,
+        dict
+    ):
+
+        raise Exception(
+            "Invalid order book response"
+        )
+
+    bids = data.get(
+        "bids",
+        []
+    )
+
+    asks = data.get(
+        "asks",
+        []
+    )
+
+    bids_clean = []
+
+    asks_clean = []
+
+    for row in bids:
+
+        if len(row) >= 2:
+
+            bids_clean.append({
+
+                "price":
+                    safe_float(
+                        row[0]
+                    ),
+
+                "volume":
+                    safe_float(
+                        row[1]
+                    ),
+
+                "orders":
+                    (
+                        int(
+                            row[2]
+                        )
+
+                        if len(row) >= 3
+
+                        else None
+                    )
+
+            })
+
+    for row in asks:
+
+        if len(row) >= 2:
+
+            asks_clean.append({
+
+                "price":
+                    safe_float(
+                        row[0]
+                    ),
+
+                "volume":
+                    safe_float(
+                        row[1]
+                    ),
+
+                "orders":
+                    (
+                        int(
+                            row[2]
+                        )
+
+                        if len(row) >= 3
+
+                        else None
+                    )
+
+            })
+
+    bid_volume = sum(
+
+        x["volume"]
+
+        for x in bids_clean
+    )
+
+    ask_volume = sum(
+
+        x["volume"]
+
+        for x in asks_clean
+    )
+
+    total = (
+
+        bid_volume +
+
+        ask_volume
+    )
+
+    if total > 0:
+
+        imbalance = (
+
+            (
+                bid_volume -
+
+                ask_volume
+            )
+
+            /
+
+            total
+
+        ) * 100
+
+        buyer_pressure = (
+
+            bid_volume /
+
+            total
+
+        ) * 100
+
+        seller_pressure = (
+
+            ask_volume /
+
+            total
+
+        ) * 100
+
+    else:
+
+        imbalance = 0
+
+        buyer_pressure = 50
+
+        seller_pressure = 50
+
+    best_bid = (
+
+        bids_clean[0]["price"]
+
+        if bids_clean
+
+        else None
+    )
+
+    best_ask = (
+
+        asks_clean[0]["price"]
+
+        if asks_clean
+
+        else None
+    )
+
+    bid_wall = (
+
+        max(
+
+            bids_clean,
+
+            key=lambda x:
+            x["volume"]
+
+        )
+
+        if bids_clean
+
+        else None
+    )
+
+    ask_wall = (
+
+        max(
+
+            asks_clean,
+
+            key=lambda x:
+            x["volume"]
+
+        )
+
+        if asks_clean
+
+        else None
+    )
+
+    if imbalance >= 15:
+
+        pressure = "BUYER_DOMINANT"
+
+    elif imbalance <= -15:
+
+        pressure = "SELLER_DOMINANT"
+
+    else:
+
+        pressure = "BALANCED"
+
+    return {
+
+        "status":
+            "READY",
+
+        "symbol":
+            symbol,
+
+        "best_bid":
+            best_bid,
+
+        "best_ask":
+            best_ask,
+
+        "bid_volume":
+            round(
+                bid_volume,
+                4
+            ),
+
+        "ask_volume":
+            round(
+                ask_volume,
+                4
+            ),
+
+        "imbalance_percent":
+            round(
+                imbalance,
+                2
+            ),
+
+        "buyer_pressure_percent":
+            round(
+                buyer_pressure,
+                2
+            ),
+
+        "seller_pressure_percent":
+            round(
+                seller_pressure,
+                2
+            ),
+
+        "pressure":
+            pressure,
+
+        "largest_bid_wall":
+            bid_wall,
+
+        "largest_ask_wall":
+            ask_wall,
+
+        "timestamp":
+            utc_now()
+
+    }
+
+
+# =========================================================
+# RECENT EXECUTED DEALS
+# =========================================================
+
+def get_recent_deals(symbol):
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    data = mexc_get(
+
+        f"/api/v1/contract/deals/{symbol}",
+
+        None
+
+    )
+
+    if not isinstance(
+        data,
+        list
+    ):
+
+        return {
+
+            "status":
+                "UNAVAILABLE",
+
+            "message":
+                "No recent deal data"
+
+        }
+
+    buy_volume = 0.0
+
+    sell_volume = 0.0
+
+    buy_count = 0
+
+    sell_count = 0
+
+    trades = []
+
+    for row in data:
+
+        if not isinstance(
+            row,
+            dict
+        ):
+
+            continue
+
+        price = safe_float(
+            row.get(
+                "p",
+                row.get(
+                    "price",
+                    0
+                )
+            )
+        )
+
+        volume = safe_float(
+            row.get(
+                "v",
+                row.get(
+                    "vol",
+                    row.get(
+                        "volume",
+                        0
+                    )
+                )
+            )
+        )
+
+        side = row.get(
+            "T",
+            row.get(
+                "side"
+            )
+        )
+
+        # MEXC contract docs:
+        # T=1 buy / purchase
+        # T=2 sell
+
+        if str(side) == "1":
+
+            buy_volume += volume
+
+            buy_count += 1
+
+            side_name = "BUY"
+
+        elif str(side) == "2":
+
+            sell_volume += volume
+
+            sell_count += 1
+
+            side_name = "SELL"
+
+        else:
+
+            side_name = "UNKNOWN"
+
+        trades.append({
+
+            "price":
+                price,
+
+            "volume":
+                volume,
+
+            "side":
+                side_name
+
+        })
+
+    total = (
+
+        buy_volume +
+
+        sell_volume
+    )
+
+    if total > 0:
+
+        delta = (
+
+            buy_volume -
+
+            sell_volume
+        )
+
+        delta_percent = (
+
+            delta /
+
+            total
+
+        ) * 100
+
+    else:
+
+        delta = 0
+
+        delta_percent = 0
+
+    if delta_percent >= 15:
+
+        aggression = "BUYER_AGGRESSION"
+
+    elif delta_percent <= -15:
+
+        aggression = "SELLER_AGGRESSION"
+
+    else:
+
+        aggression = "BALANCED"
+
+    return {
+
+        "status":
+            "READY",
+
+        "buy_volume":
+            round(
+                buy_volume,
+                4
+            ),
+
+        "sell_volume":
+            round(
+                sell_volume,
+                4
+            ),
+
+        "buy_count":
+            buy_count,
+
+        "sell_count":
+            sell_count,
+
+        "delta":
+            round(
+                delta,
+                4
+            ),
+
+        "delta_percent":
+            round(
+                delta_percent,
+                2
+            ),
+
+        "aggression":
+            aggression,
+
+        "recent_trades":
+            trades[-20:]
+
+    }
+
+
+# =========================================================
+# FUNDING
+# =========================================================
+
+def get_funding_rate(symbol):
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    try:
+
+        data = mexc_get(
+
+            f"/api/v1/contract/funding_rate/{symbol}"
+
+        )
+
+        return {
+
+            "status":
+                "READY",
+
+            "funding_rate":
+                safe_float(
+
+                    data.get(
+                        "fundingRate"
+                    )
+
+                ),
+
+            "funding_rate_percent":
+                round(
+
+                    safe_float(
+
+                        data.get(
+                            "fundingRate"
+                        )
+
+                    ) * 100,
+
+                    5
+                ),
+
+            "next_settle_time":
+                data.get(
+                    "nextSettleTime"
+                )
+
+        }
+
+    except Exception as e:
+
+        return {
+
+            "status":
+                "UNAVAILABLE",
+
+            "message":
+                str(e)
+
+        }
+
+
+# =========================================================
+# ORDER FLOW ANALYSIS
+# =========================================================
+
+def analyze_order_flow(
+
+    orderbook,
+
+    deals
+
+):
+
+    score = 0
+
+    reasons = []
+
+    # Order book
+
+    ob_pressure = orderbook.get(
+        "pressure",
+        "BALANCED"
+    )
+
+    # Executed flow
+
+    aggression = deals.get(
+        "aggression",
+        "BALANCED"
+    )
+
+    # Buyer side
+
+    if (
+
+        ob_pressure == "BUYER_DOMINANT"
+
+        and
+
+        aggression == "BUYER_AGGRESSION"
+
+    ):
+
+        score += 4
+
+        reasons.append(
+
+            "Order book and executed flow both support buyers"
+        )
+
+    elif (
+
+        ob_pressure == "SELLER_DOMINANT"
+
+        and
+
+        aggression == "SELLER_AGGRESSION"
+
+    ):
+
+        score -= 4
+
+        reasons.append(
+
+            "Order book and executed flow both support sellers"
+        )
+
+    # Divergence / possible absorption
+
+    if (
+
+        ob_pressure == "BUYER_DOMINANT"
+
+        and
+
+        aggression == "SELLER_AGGRESSION"
+
+    ):
+
+        score -= 2
+
+        reasons.append(
+
+            "Buyer liquidity visible but executed selling suggests possible absorption"
+        )
+
+    if (
+
+        ob_pressure == "SELLER_DOMINANT"
+
+        and
+
+        aggression == "BUYER_AGGRESSION"
+
+    ):
+
+        score += 2
+
+        reasons.append(
+
+            "Seller liquidity visible but executed buying suggests possible absorption"
+        )
+
+    return {
+
+        "score":
+            score,
+
+        "reasons":
+            reasons,
+
+        "orderbook_pressure":
+            ob_pressure,
+
+        "executed_aggression":
+            aggression
+
+    }
+
+
+# =========================================================
+# FINAL SIGNAL ENGINE
 # =========================================================
 
 def generate_signal(
+
     df,
+
     symbol,
-    mtf
+
+    mtf,
+
+    orderbook,
+
+    deals,
+
+    funding
+
 ):
 
-    last = df.iloc[-1]
+    last = df.iloc[
+        -1
+    ]
 
     bias = get_market_bias(
         df
     )
 
     structure = get_market_structure(
+        df
+    )
+
+    bos = detect_bos(
         df
     )
 
@@ -1333,28 +2316,20 @@ def generate_signal(
         levels
     )
 
-    volume = volume_confirmation(
-        df
-    )
-
     candle = candle_confirmation(
         df
     )
 
     rsi = safe_float(
-
         last["RSI"],
-
         50
     )
 
     atr = safe_float(
-
         last["ATR"]
     )
 
     price = safe_float(
-
         last["close"]
     )
 
@@ -1363,7 +2338,7 @@ def generate_signal(
     reasons = []
 
     # -----------------------------------------------------
-    # MARKET BIAS
+    # CONTEXT / BIAS
     # -----------------------------------------------------
 
     if bias["bias"] == "BULLISH":
@@ -1371,8 +2346,7 @@ def generate_signal(
         score += 2
 
         reasons.append(
-
-            "Market bias is bullish"
+            "Market context is bullish"
         )
 
     elif bias["bias"] == "BEARISH":
@@ -1380,8 +2354,7 @@ def generate_signal(
         score -= 2
 
         reasons.append(
-
-            "Market bias is bearish"
+            "Market context is bearish"
         )
 
     # -----------------------------------------------------
@@ -1393,7 +2366,6 @@ def generate_signal(
         score += 2
 
         reasons.append(
-
             "Bullish market structure"
         )
 
@@ -1402,8 +2374,27 @@ def generate_signal(
         score -= 2
 
         reasons.append(
-
             "Bearish market structure"
+        )
+
+    # -----------------------------------------------------
+    # BOS
+    # -----------------------------------------------------
+
+    if bos == "BULLISH_BOS":
+
+        score += 3
+
+        reasons.append(
+            "Bullish break of structure"
+        )
+
+    elif bos == "BEARISH_BOS":
+
+        score -= 3
+
+        reasons.append(
+            "Bearish break of structure"
         )
 
     # -----------------------------------------------------
@@ -1415,7 +2406,6 @@ def generate_signal(
         score += 3
 
         reasons.append(
-
             "Bullish liquidity sweep"
         )
 
@@ -1424,7 +2414,6 @@ def generate_signal(
         score -= 3
 
         reasons.append(
-
             "Bearish liquidity sweep"
         )
 
@@ -1434,19 +2423,17 @@ def generate_signal(
 
     if breakout == "BULLISH_BREAKOUT":
 
-        score += 3
+        score += 2
 
         reasons.append(
-
             "Bullish key-level breakout"
         )
 
     elif breakout == "BEARISH_BREAKDOWN":
 
-        score -= 3
+        score -= 2
 
         reasons.append(
-
             "Bearish key-level breakdown"
         )
 
@@ -1459,8 +2446,7 @@ def generate_signal(
         score += 3
 
         reasons.append(
-
-            "Bullish breakout retest confirmed"
+            "Bullish breakout retest"
         )
 
     elif retest == "BEARISH_RETEST":
@@ -1468,23 +2454,30 @@ def generate_signal(
         score -= 3
 
         reasons.append(
-
-            "Bearish breakdown retest confirmed"
+            "Bearish breakdown retest"
         )
 
     # -----------------------------------------------------
     # VOLUME
     # -----------------------------------------------------
 
-    if volume["confirmed"]:
+    volume_ratio = safe_float(
+
+        last[
+            "VOLUME_RATIO"
+        ],
+
+        1
+    )
+
+    if volume_ratio >= 1.2:
 
         if score > 0:
 
             score += 2
 
             reasons.append(
-
-                "Volume confirms bullish pressure"
+                "Volume confirms bullish participation"
             )
 
         elif score < 0:
@@ -1492,8 +2485,7 @@ def generate_signal(
             score -= 2
 
             reasons.append(
-
-                "Volume confirms bearish pressure"
+                "Volume confirms bearish participation"
             )
 
     # -----------------------------------------------------
@@ -1505,7 +2497,6 @@ def generate_signal(
         score += 1
 
         reasons.append(
-
             "RSI supports bullish momentum"
         )
 
@@ -1514,7 +2505,6 @@ def generate_signal(
         score -= 1
 
         reasons.append(
-
             "RSI supports bearish momentum"
         )
 
@@ -1523,7 +2513,6 @@ def generate_signal(
         score -= 2
 
         reasons.append(
-
             "Overbought warning"
         )
 
@@ -1532,7 +2521,6 @@ def generate_signal(
         score += 2
 
         reasons.append(
-
             "Oversold recovery possibility"
         )
 
@@ -1551,7 +2539,6 @@ def generate_signal(
         score += 1
 
         reasons.append(
-
             "Bullish candle confirmation"
         )
 
@@ -1566,7 +2553,6 @@ def generate_signal(
         score -= 1
 
         reasons.append(
-
             "Bearish candle confirmation"
         )
 
@@ -1579,7 +2565,6 @@ def generate_signal(
         score += 3
 
         reasons.append(
-
             "Higher timeframes support LONG"
         )
 
@@ -1588,18 +2573,79 @@ def generate_signal(
         score -= 3
 
         reasons.append(
-
             "Higher timeframes support SHORT"
         )
+
+    # -----------------------------------------------------
+    # ORDER FLOW
+    # -----------------------------------------------------
+
+    flow = analyze_order_flow(
+
+        orderbook,
+
+        deals
+
+    )
+
+    score += flow[
+        "score"
+    ]
+
+    reasons.extend(
+
+        flow[
+            "reasons"
+        ]
+
+    )
+
+    # -----------------------------------------------------
+    # FUNDING CONTEXT
+    # -----------------------------------------------------
+
+    funding_rate = safe_float(
+
+        funding.get(
+            "funding_rate"
+        ),
+
+        0
+    )
+
+    # Extreme positive funding:
+    # caution for crowded longs.
+
+    if funding_rate > 0.0008:
+
+        if score > 0:
+
+            score -= 1
+
+            reasons.append(
+
+                "High positive funding adds LONG crowding risk"
+            )
+
+    # Extreme negative funding:
+    # caution for crowded shorts.
+
+    if funding_rate < -0.0008:
+
+        if score < 0:
+
+            score += 1
+
+            reasons.append(
+
+                "Strong negative funding adds SHORT crowding risk"
+            )
 
     # =====================================================
     # FINAL DIRECTION
     # =====================================================
 
     direction = "NO_TRADE"
-
-    # We require a stronger setup than simple indicator
-    # agreement.
 
     if score >= MIN_SCORE:
 
@@ -1609,7 +2655,7 @@ def generate_signal(
 
         direction = "SHORT"
 
-    # Reject higher timeframe conflict
+    # Higher timeframe conflict rejection
 
     if (
 
@@ -1617,7 +2663,9 @@ def generate_signal(
 
         and
 
-        mtf["confirmation"] == "BEARISH"
+        mtf[
+            "confirmation"
+        ] == "BEARISH"
 
     ):
 
@@ -1625,7 +2673,7 @@ def generate_signal(
 
         reasons.append(
 
-            "LONG rejected by higher timeframe conflict"
+            "LONG rejected due to higher timeframe conflict"
         )
 
     if (
@@ -1634,7 +2682,9 @@ def generate_signal(
 
         and
 
-        mtf["confirmation"] == "BULLISH"
+        mtf[
+            "confirmation"
+        ] == "BULLISH"
 
     ):
 
@@ -1642,7 +2692,7 @@ def generate_signal(
 
         reasons.append(
 
-            "SHORT rejected by higher timeframe conflict"
+            "SHORT rejected due to higher timeframe conflict"
         )
 
     # =====================================================
@@ -1659,8 +2709,6 @@ def generate_signal(
 
     tp3 = None
 
-    risk_reward = 0
-
     if direction == "LONG":
 
         atr_stop = (
@@ -1672,13 +2720,14 @@ def generate_signal(
             SL_ATR
         )
 
-        # Put SL below key support or ATR distance
-
         stop_loss = min(
 
             atr_stop,
 
-            levels["support"]
+            levels[
+                "support"
+            ]
+
         )
 
         risk = (
@@ -1717,8 +2766,6 @@ def generate_signal(
                 TP3_RR
             )
 
-            risk_reward = TP1_RR
-
     elif direction == "SHORT":
 
         atr_stop = (
@@ -1734,7 +2781,10 @@ def generate_signal(
 
             atr_stop,
 
-            levels["resistance"]
+            levels[
+                "resistance"
+            ]
+
         )
 
         risk = (
@@ -1773,32 +2823,8 @@ def generate_signal(
                 TP3_RR
             )
 
-            risk_reward = TP1_RR
-
     # =====================================================
-    # CONFIDENCE
-    # =====================================================
-
-    confidence = min(
-
-        95,
-
-        50 +
-
-        abs(score) * 3
-    )
-
-    if direction == "NO_TRADE":
-
-        confidence = min(
-
-            confidence,
-
-            55
-        )
-
-    # =====================================================
-    # SIGNAL NAME
+    # SIGNAL
     # =====================================================
 
     if direction == "LONG":
@@ -1807,7 +2833,7 @@ def generate_signal(
 
             "STRONG BUY"
 
-            if score >= 12
+            if score >= 14
 
             else
 
@@ -1820,7 +2846,7 @@ def generate_signal(
 
             "STRONG SELL"
 
-            if score <= -12
+            if score <= -14
 
             else
 
@@ -1830,6 +2856,25 @@ def generate_signal(
     else:
 
         signal = "NO TRADE"
+
+    confidence = min(
+
+        95,
+
+        50 +
+
+        abs(score) * 2.5
+
+    )
+
+    if direction == "NO_TRADE":
+
+        confidence = min(
+
+            confidence,
+
+            55
+        )
 
     return {
 
@@ -1847,9 +2892,7 @@ def generate_signal(
 
         "confidence":
             round(
-
                 confidence,
-
                 2
             ),
 
@@ -1858,28 +2901,20 @@ def generate_signal(
 
         "current_price":
             round(
-
                 price,
-
                 8
             ),
 
         "entry":
             round(
-
                 entry,
-
                 8
             ),
 
         "stop_loss":
-
             (
-
                 round(
-
                     stop_loss,
-
                     8
                 )
 
@@ -1889,13 +2924,9 @@ def generate_signal(
             ),
 
         "take_profit_1":
-
             (
-
                 round(
-
                     tp1,
-
                     8
                 )
 
@@ -1905,13 +2936,9 @@ def generate_signal(
             ),
 
         "take_profit_2":
-
             (
-
                 round(
-
                     tp2,
-
                     8
                 )
 
@@ -1921,13 +2948,9 @@ def generate_signal(
             ),
 
         "take_profit_3":
-
             (
-
                 round(
-
                     tp3,
-
                     8
                 )
 
@@ -1936,15 +2959,14 @@ def generate_signal(
                 else None
             ),
 
-        "risk_reward":
-
-            risk_reward,
-
         "market_bias":
             bias,
 
         "market_structure":
             structure,
+
+        "break_of_structure":
+            bos,
 
         "liquidity_sweep":
             sweep,
@@ -1955,49 +2977,68 @@ def generate_signal(
         "retest":
             retest,
 
-        "volume":
-            volume,
-
         "candle":
             candle,
 
         "rsi":
             round(
-
                 rsi,
-
                 2
             ),
 
         "atr":
             round(
-
                 atr,
-
                 8
+            ),
+
+        "volume_ratio":
+            round(
+                volume_ratio,
+                3
             ),
 
         "support":
             round(
-
-                levels["support"],
-
+                levels[
+                    "support"
+                ],
                 8
             ),
 
         "resistance":
             round(
-
-                levels["resistance"],
-
+                levels[
+                    "resistance"
+                ],
                 8
             ),
+
+        "order_flow":
+            flow,
+
+        "orderbook":
+            orderbook,
+
+        "executed_flow":
+            deals,
+
+        "funding":
+            funding,
 
         "multi_timeframe":
             mtf,
 
         "reasons":
-            reasons
+            reasons,
+
+        "warning":
+            (
+                "Analysis only. "
+                "No guaranteed profit. "
+                "Paper trade before real money."
+            )
+
     }
 
 
@@ -2029,6 +3070,7 @@ def calculate_position_size(
 
             "position_value":
                 0
+
         }
 
     risk_amount = (
@@ -2038,6 +3080,7 @@ def calculate_position_size(
         risk_percent /
 
         100
+
     )
 
     distance = abs(
@@ -2059,6 +3102,7 @@ def calculate_position_size(
 
             "position_value":
                 0
+
         }
 
     position_size = (
@@ -2078,36 +3122,28 @@ def calculate_position_size(
     return {
 
         "risk_amount":
-
             round(
-
                 risk_amount,
-
                 2
             ),
 
         "position_size":
-
             round(
-
                 position_size,
-
                 8
             ),
 
         "position_value":
-
             round(
-
                 position_value,
-
                 2
             )
+
     }
 
 
 # =========================================================
-# LIVE ANALYSIS
+# HOME
 # =========================================================
 
 @app.route("/")
@@ -2119,55 +3155,87 @@ def home():
             "success",
 
         "bot":
-            "GM Smart Scalper V3",
+            "GM Smart Scalper V4",
+
+        "mode":
+            "MEXC FUTURES ANALYSIS ONLY",
 
         "version":
-            "3.0",
+            "4.0",
 
-        "message":
-            "Video-inspired smart trading analysis bot is running.",
+        "endpoints": [
 
-        "endpoints":
+            "/health",
 
-            [
+            "/analysis/BTC_USDT",
 
-                "/health",
+            "/orderflow/BTC_USDT",
 
-                "/analysis/BTCUSDT",
+            "/backtest/BTC_USDT"
 
-                "/backtest/BTCUSDT"
-
-            ]
+        ]
 
     })
 
+
+# =========================================================
+# HEALTH
+# =========================================================
 
 @app.route("/health")
 def health():
 
-    return jsonify({
+    try:
 
-        "status":
-            "healthy",
+        ping = mexc_get(
 
-        "bot":
-            "GM Smart Scalper V3",
+            "/api/v1/contract/ping"
 
-        "timestamp":
+        )
 
-            datetime.now(
+        return jsonify({
 
-                timezone.utc
+            "status":
+                "healthy",
 
-            ).isoformat()
+            "mexc":
+                "connected",
 
-    })
+            "server_time":
+                ping,
 
+            "bot":
+                "GM Smart Scalper V4",
+
+            "timestamp":
+                utc_now()
+
+        })
+
+    except Exception as e:
+
+        return jsonify({
+
+            "status":
+                "unhealthy",
+
+            "message":
+                str(e),
+
+            "timestamp":
+                utc_now()
+
+        }), 500
+
+
+# =========================================================
+# ORDER FLOW ENDPOINT
+# =========================================================
 
 @app.route(
-    "/analysis/<symbol>"
+    "/orderflow/<symbol>"
 )
-def analysis(symbol):
+def orderflow(symbol):
 
     try:
 
@@ -2175,100 +3243,54 @@ def analysis(symbol):
             symbol
         )
 
-        account_size = float(
-
-            request.args.get(
-
-                "account_size",
-
-                1000
-            )
-        )
-
-        risk_percent = float(
-
-            request.args.get(
-
-                "risk_percent",
-
-                1
-            )
-        )
-
-        df = get_data(
+        orderbook = get_orderbook(
 
             symbol,
 
-            "5m",
+            ORDERBOOK_LEVELS
 
-            1000
         )
 
-        df = add_indicators(
-            df
-        )
-
-        mtf = get_mtf_confirmation(
+        deals = get_recent_deals(
             symbol
         )
 
-        result = generate_signal(
-
-            df,
-
-            symbol,
-
-            mtf
+        funding = get_funding_rate(
+            symbol
         )
 
-        money = calculate_position_size(
+        flow = analyze_order_flow(
 
-            result["entry"],
+            orderbook,
 
-            result["stop_loss"],
+            deals
 
-            account_size,
-
-            risk_percent
         )
 
-        result[
-            "money_management"
-        ] = {
+        return jsonify({
 
-            "account_size":
-                account_size,
+            "status":
+                "success",
 
-            "risk_percent":
-                risk_percent,
+            "symbol":
+                symbol,
 
-            **money
-        }
+            "orderbook":
+                orderbook,
 
-        result[
-            "timestamp"
-        ] = (
+            "executed_flow":
+                deals,
 
-            datetime.now(
+            "funding":
+                funding,
 
-                timezone.utc
+            "combined_order_flow":
+                flow,
 
-            ).isoformat()
-        )
+            "timestamp":
+                utc_now()
 
-        result[
-            "warning"
-        ] = (
-
-            "Technical analysis only. "
-            "No guaranteed win rate or profit. "
-            "This bot uses MEXC spot candle data. "
-            "Paper trade before using real money."
-        )
-
-        return jsonify(
-            result
-        )
+        })
 
     except Exception as e:
 
@@ -2289,7 +3311,155 @@ def analysis(symbol):
 
 
 # =========================================================
-# BACKTEST
+# LIVE ANALYSIS
+# =========================================================
+
+@app.route(
+    "/analysis/<symbol>"
+)
+def analysis(symbol):
+
+    try:
+
+        symbol = normalize_symbol(
+            symbol
+        )
+
+        account_size = float(
+
+            request.args.get(
+
+                "account_size",
+
+                1000
+
+            )
+
+        )
+
+        risk_percent = float(
+
+            request.args.get(
+
+                "risk_percent",
+
+                1
+
+            )
+
+        )
+
+        df = get_data(
+
+            symbol,
+
+            "5m",
+
+            1000
+
+        )
+
+        df = add_indicators(
+            df
+        )
+
+        mtf = get_mtf_confirmation(
+            symbol
+        )
+
+        orderbook = get_orderbook(
+
+            symbol,
+
+            ORDERBOOK_LEVELS
+
+        )
+
+        deals = get_recent_deals(
+            symbol
+        )
+
+        funding = get_funding_rate(
+            symbol
+        )
+
+        result = generate_signal(
+
+            df,
+
+            symbol,
+
+            mtf,
+
+            orderbook,
+
+            deals,
+
+            funding
+
+        )
+
+        money = calculate_position_size(
+
+            result[
+                "entry"
+            ],
+
+            result[
+                "stop_loss"
+            ],
+
+            account_size,
+
+            risk_percent
+
+        )
+
+        result[
+            "money_management"
+        ] = {
+
+            "account_size":
+                account_size,
+
+            "risk_percent":
+                risk_percent,
+
+            **money
+
+        }
+
+        result[
+            "timestamp"
+        ] = utc_now()
+
+        return jsonify(
+            result
+        )
+
+    except Exception as e:
+
+        return jsonify({
+
+            "status":
+                "error",
+
+            "symbol":
+                normalize_symbol(
+                    symbol
+                ),
+
+            "message":
+                str(e),
+
+            "timestamp":
+                utc_now()
+
+        }), 400
+
+
+# =========================================================
+# SIMPLE BACKTEST
 # =========================================================
 
 def run_backtest(
@@ -2298,7 +3468,7 @@ def run_backtest(
 
     symbol,
 
-    fee_percent=0.1,
+    fee_percent=0.06,
 
     slippage_percent=0.02
 
@@ -2314,13 +3484,10 @@ def run_backtest(
 
     total_trades = 0
 
-    skipped = 0
-
     net_return = 0
 
     trades = []
 
-    # Start after enough candles
     start = 220
 
     for i in range(
@@ -2335,32 +3502,27 @@ def run_backtest(
 
     ):
 
-        # Historical data only
         historical = (
 
             df.iloc[
-
                 :i + 1
-
             ]
 
             .copy()
-        )
 
-        # We don't call live MTF here because that would
-        # make the backtest extremely slow and could mix
-        # current market data.
-        #
-        # Instead we use historical 5m bias.
+        )
 
         fake_mtf = {
 
             "confirmation":
+
                 get_market_bias(
 
                     historical
 
-                )["bias"],
+                )[
+                    "bias"
+                ],
 
             "timeframes":
                 {},
@@ -2373,13 +3535,50 @@ def run_backtest(
 
         }
 
+        # Historical backtest does not use
+        # live order book/deals.
+
+        empty_ob = {
+
+            "pressure":
+                "BALANCED",
+
+            "imbalance_percent":
+                0
+
+        }
+
+        empty_deals = {
+
+            "aggression":
+                "BALANCED",
+
+            "delta_percent":
+                0
+
+        }
+
+        empty_funding = {
+
+            "funding_rate":
+                0
+
+        }
+
         result = generate_signal(
 
             historical,
 
             symbol,
 
-            fake_mtf
+            fake_mtf,
+
+            empty_ob,
+
+            empty_deals,
+
+            empty_funding
+
         )
 
         direction = result[
@@ -2388,13 +3587,14 @@ def run_backtest(
 
         if direction == "NO_TRADE":
 
-            skipped += 1
-
             continue
 
         entry = safe_float(
 
-            result["entry"]
+            result[
+                "entry"
+            ]
+
         )
 
         sl = result[
@@ -2415,8 +3615,6 @@ def run_backtest(
 
         ):
 
-            skipped += 1
-
             continue
 
         total_trades += 1
@@ -2424,8 +3622,6 @@ def run_backtest(
         outcome = "OPEN"
 
         exit_price = None
-
-        exit_index = None
 
         for j in range(
 
@@ -2440,6 +3636,7 @@ def run_backtest(
                 MAX_HOLD_CANDLES,
 
                 len(df)
+
             )
 
         ):
@@ -2449,6 +3646,7 @@ def run_backtest(
                 df.iloc[j][
                     "high"
                 ]
+
             )
 
             low = safe_float(
@@ -2456,11 +3654,8 @@ def run_backtest(
                 df.iloc[j][
                     "low"
                 ]
-            )
 
-            # Conservative:
-            # SL first if both touched
-            # in the same candle.
+            )
 
             if direction == "LONG":
 
@@ -2470,8 +3665,6 @@ def run_backtest(
 
                     exit_price = sl
 
-                    exit_index = j
-
                     break
 
                 if high >= tp:
@@ -2480,19 +3673,15 @@ def run_backtest(
 
                     exit_price = tp
 
-                    exit_index = j
-
                     break
 
-            elif direction == "SHORT":
+            else:
 
                 if high >= sl:
 
                     outcome = "LOSS"
 
                     exit_price = sl
-
-                    exit_index = j
 
                     break
 
@@ -2502,129 +3691,92 @@ def run_backtest(
 
                     exit_price = tp
 
-                    exit_index = j
-
                     break
 
         if outcome == "OPEN":
 
-            # If neither TP nor SL hit,
-            # use final candle close as exit.
-
-            exit_index = min(
-
-                i +
-
-                MAX_HOLD_CANDLES,
-
-                len(df) - 1
-            )
-
             exit_price = safe_float(
 
                 df.iloc[
-                    exit_index
+                    min(
+
+                        i +
+
+                        MAX_HOLD_CANDLES,
+
+                        len(df) - 1
+
+                    )
+
                 ][
                     "close"
                 ]
+
             )
 
-            if direction == "LONG":
+        if direction == "LONG":
 
-                gross = (
+            gross = (
 
+                (
                     exit_price -
 
                     entry
+                )
 
-                ) / entry * 100
+                /
 
-            else:
-
-                gross = (
-
-                    entry -
-
-                    exit_price
-
-                ) / entry * 100
-
-            total_cost = (
-
-                fee_percent * 2
-
-                +
-
-                slippage_percent
-            )
-
-            net = (
-
-                gross -
-
-                total_cost
-            )
-
-            if net > 0:
-
-                outcome = "WIN"
-
-                wins += 1
-
-            else:
-
-                outcome = "LOSS"
-
-                losses += 1
-
-            net_return += net
-
-        else:
-
-            gross_distance = (
-
-                abs(
-
-                    exit_price -
-
-                    entry
-
-                ) / entry
+                entry
 
             ) * 100
 
-            total_cost = (
+        else:
 
-                fee_percent * 2
+            gross = (
 
-                +
+                (
+                    entry -
 
-                slippage_percent
-            )
-
-            if outcome == "WIN":
-
-                net = (
-
-                    gross_distance -
-
-                    total_cost
+                    exit_price
                 )
 
-                wins += 1
+                /
 
-            else:
+                entry
 
-                net = (
+            ) * 100
 
-                    -gross_distance -
+        total_cost = (
 
-                    total_cost
-                )
+            fee_percent * 2
 
-                losses += 1
+            +
 
-            net_return += net
+            slippage_percent
+
+        )
+
+        net = (
+
+            gross -
+
+            total_cost
+
+        )
+
+        if net > 0:
+
+            wins += 1
+
+            outcome = "WIN"
+
+        else:
+
+            losses += 1
+
+            outcome = "LOSS"
+
+        net_return += net
 
         trades.append({
 
@@ -2633,17 +3785,13 @@ def run_backtest(
 
             "entry":
                 round(
-
                     entry,
-
                     8
                 ),
 
             "exit":
                 round(
-
                     exit_price,
-
                     8
                 ),
 
@@ -2652,26 +3800,21 @@ def run_backtest(
 
             "net_return_percent":
                 round(
-
                     net,
-
                     4
                 )
+
         })
 
-    if total_trades > 0:
+    win_rate = (
 
-        win_rate = (
+        wins /
 
-            wins /
+        total_trades *
 
-            total_trades
+        100
 
-        ) * 100
-
-    else:
-
-        win_rate = 0
+    ) if total_trades else 0
 
     return {
 
@@ -2682,7 +3825,7 @@ def run_backtest(
             symbol,
 
         "strategy":
-            "GM Smart Scalper V3",
+            "GM Smart Scalper V4",
 
         "candles_tested":
             len(df) - start,
@@ -2696,22 +3839,15 @@ def run_backtest(
         "losses":
             losses,
 
-        "skipped_no_trade":
-            skipped,
-
         "win_rate_percent":
             round(
-
                 win_rate,
-
                 2
             ),
 
         "net_return_percent":
             round(
-
                 net_return,
-
                 4
             ),
 
@@ -2721,24 +3857,17 @@ def run_backtest(
         "slippage_percent":
             slippage_percent,
 
-        "max_hold_candles":
-            MAX_HOLD_CANDLES,
-
-        "note":
-
-            (
-
-                "Historical backtest. "
-                "TP1 and SL are checked on future "
-                "candles. If both TP and SL are "
-                "touched in one candle, SL is counted "
-                "first as a conservative assumption. "
-                "Past performance does not guarantee "
-                "future results."
-            ),
-
         "recent_trades":
-            trades[-20:]
+            trades[-20:],
+
+        "warning":
+            (
+                "Historical backtest only. "
+                "Order Book and executed trade flow "
+                "are not available historically in "
+                "this simple backtest."
+            )
+
     }
 
 
@@ -2760,7 +3889,9 @@ def backtest(symbol):
                 "limit",
 
                 1000
+
             )
+
         )
 
         fee = float(
@@ -2769,8 +3900,10 @@ def backtest(symbol):
 
                 "fee",
 
-                0.1
+                0.06
+
             )
+
         )
 
         slippage = float(
@@ -2780,7 +3913,9 @@ def backtest(symbol):
                 "slippage",
 
                 0.02
+
             )
+
         )
 
         df = get_data(
@@ -2790,6 +3925,7 @@ def backtest(symbol):
             "5m",
 
             limit
+
         )
 
         result = run_backtest(
@@ -2801,18 +3937,12 @@ def backtest(symbol):
             fee,
 
             slippage
+
         )
 
         result[
             "timestamp"
-        ] = (
-
-            datetime.now(
-
-                timezone.utc
-
-            ).isoformat()
-        )
+        ] = utc_now()
 
         return jsonify(
             result
@@ -2837,7 +3967,7 @@ def backtest(symbol):
 
 
 # =========================================================
-# RUN SERVER
+# RUN
 # =========================================================
 
 if __name__ == "__main__":
@@ -2849,7 +3979,9 @@ if __name__ == "__main__":
             "PORT",
 
             8080
+
         )
+
     )
 
     app.run(
@@ -2857,4 +3989,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
 
         port=port
+
     )
